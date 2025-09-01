@@ -1,0 +1,240 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                        String    @id @default(uuid())
+  firstName                 String    @db.VarChar(50)
+  lastName                  String    @db.VarChar(50)
+  email                     String    @unique @db.VarChar(100)
+  password                  String
+  role                      String    @default("student") // student, instructor, admin
+  avatar                    String?
+  bio                       String?   @db.Text
+  dateOfBirth               DateTime? @db.Date
+  phone                     String?   @db.VarChar(20)
+  address                   Json?
+  isEmailVerified           Boolean   @default(false)
+  emailVerificationToken    String?
+  emailVerificationExpires  DateTime?
+  passwordResetToken        String?
+  passwordResetExpires      DateTime?
+  lastLogin                 DateTime?
+  isActive                  Boolean   @default(true)
+  preferences               Json      @default("{}")
+  socialLinks               Json      @default("{}")
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  // Relations
+  coursesAsInstructor       Course[]     @relation("InstructorCourses")
+  enrollments              Enrollment[]
+  assignmentSubmissions    AssignmentSubmission[]
+  lessonProgress           LessonProgress[]
+  courseReviews            CourseReview[]
+
+  @@map("users")
+}
+
+model Course {
+  id                   String        @id @default(uuid())
+  title                String        @db.VarChar(200)
+  slug                 String        @unique @db.VarChar(250)
+  description          String        @db.Text
+  shortDescription     String?       @db.VarChar(300)
+  thumbnail            String?
+  level                String        @default("beginner") // beginner, intermediate, advanced
+  category             String        @db.VarChar(100)
+  tags                 String[]
+  duration             Int           @default(0) // in minutes
+  lessonsCount         Int           @default(0)
+  studentsCount        Int           @default(0)
+  rating               Decimal       @default(0.00) @db.Decimal(3, 2)
+  reviewsCount         Int           @default(0)
+  language             String        @default("English") @db.VarChar(50)
+  requirements         String[]
+  learningOutcomes     String[]
+  materials            String[]
+  instructorId         String
+  status               String        @default("draft") // draft, published, archived, pending_review
+  isFeatured           Boolean       @default(false)
+  enrollmentLimit      Int?
+  startDate            DateTime?
+  endDate              DateTime?
+  certificateTemplate  String?
+  settings             Json          @default("{\"allowReviews\": true, \"allowQuestions\": true, \"allowDownloads\": true, \"autoProgress\": false, \"completionThreshold\": 80}")
+  seo                  Json          @default("{\"metaTitle\": \"\", \"metaDescription\": \"\", \"keywords\": []}")
+  analytics            Json          @default("{\"totalViews\": 0, \"totalEnrollments\": 0, \"completionRate\": 0, \"averageTimeSpent\": 0}")
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  // Relations
+  instructor           User          @relation("InstructorCourses", fields: [instructorId], references: [id], onDelete: Cascade)
+  lessons              Lesson[]
+  enrollments          Enrollment[]
+  assignments          Assignment[]
+  reviews              CourseReview[]
+
+  @@index([slug])
+  @@index([instructorId])
+  @@index([category])
+  @@index([status])
+  @@index([isFeatured])
+  @@map("courses")
+}
+
+model Lesson {
+  id               String           @id @default(uuid())
+  title            String           @db.VarChar(200)
+  slug             String           @db.VarChar(250)
+  description      String?          @db.Text
+  content          String?          @db.Text
+  videoUrl         String?
+  videoDuration    Int?             // in seconds
+  attachments      String[]
+  order            Int
+  isPreview        Boolean          @default(false)
+  isPublished      Boolean          @default(true)
+  courseId         String
+  settings         Json             @default("{\"allowComments\": true, \"allowNotes\": true, \"allowDownloads\": true}")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  // Relations
+  course           Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  assignments      Assignment[]
+  progress         LessonProgress[]
+
+  @@unique([courseId, slug])
+  @@index([courseId])
+  @@index([order])
+  @@map("lessons")
+}
+
+model Assignment {
+  id                String                 @id @default(uuid())
+  title             String                 @db.VarChar(200)
+  description       String                 @db.Text
+  type              String                 // quiz, essay, project, file_upload, peer_review
+  instructions      String?                @db.Text
+  dueDate           DateTime?
+  maxScore          Int                    @default(100)
+  isRequired        Boolean                @default(true)
+  allowLateSubmission Boolean              @default(false)
+  settings          Json                   @default("{\"allowMultipleAttempts\": false, \"maxAttempts\": 1, \"timeLimit\": null}")
+  courseId          String
+  lessonId          String?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  // Relations
+  course            Course                 @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lesson            Lesson?                @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+  submissions       AssignmentSubmission[]
+
+  @@index([courseId])
+  @@index([lessonId])
+  @@index([dueDate])
+  @@map("assignments")
+}
+
+model AssignmentSubmission {
+  id               String           @id @default(uuid())
+  content          String?          @db.Text
+  attachments      String[]
+  score            Int?
+  feedback         String?          @db.Text
+  status           String           @default("pending") // pending, submitted, graded, overdue
+  submittedAt      DateTime         @default(now())
+  gradedAt         DateTime?
+  attempt          Int              @default(1)
+  assignmentId     String
+  studentId        String
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  // Relations
+  assignment       Assignment       @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  student          User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([assignmentId, studentId, attempt])
+  @@index([assignmentId])
+  @@index([studentId])
+  @@index([status])
+  @@map("assignment_submissions")
+}
+
+model Enrollment {
+  id                String           @id @default(uuid())
+  status            String           @default("active") // active, completed, cancelled, expired
+  progress          Int              @default(0) // percentage
+  completedAt       DateTime?
+  certificateUrl    String?
+  enrolledAt        DateTime         @default(now())
+  expiresAt         DateTime?
+  lastAccessedAt    DateTime?
+  courseId          String
+  studentId         String
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  // Relations
+  course            Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  student           User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, studentId])
+  @@index([courseId])
+  @@index([studentId])
+  @@index([status])
+  @@map("enrollments")
+}
+
+model LessonProgress {
+  id               String    @id @default(uuid())
+  isCompleted      Boolean   @default(false)
+  timeSpent        Int       @default(0) // in seconds
+  lastPosition     Int       @default(0) // for video lessons
+  completedAt      DateTime?
+  lessonId         String
+  studentId        String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Relations
+  lesson           Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  student          User      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([lessonId, studentId])
+  @@index([lessonId])
+  @@index([studentId])
+  @@map("lesson_progress")
+}
+
+model CourseReview {
+  id          String   @id @default(uuid())
+  rating      Int      // 1-5 stars
+  comment     String?  @db.Text
+  isPublic    Boolean  @default(true)
+  courseId    String
+  studentId   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  course      Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  student     User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, studentId])
+  @@index([courseId])
+  @@index([studentId])
+  @@index([rating])
+  @@map("course_reviews")
+}

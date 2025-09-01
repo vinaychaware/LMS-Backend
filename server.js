@@ -1,29 +1,35 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const compression = require('compression');
-const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
-const path = require('path');
-require('dotenv').config();
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import compression from 'compression';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
-// Import database and models
-const { sequelize, testConnection } = require('./config/database');
-const { setupAssociations } = require('./models');
+// Configure dotenv
+dotenv.config();
+
+// Get __dirname equivalent for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Import database
+import { prisma, testConnection } from './config/prisma.js';
 
 // Import routes
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const courseRoutes = require('./routes/courses');
-const enrollmentRoutes = require('./routes/enrollments');
-const lessonRoutes = require('./routes/lessons');
-const assignmentRoutes = require('./routes/assignments');
-const paymentRoutes = require('./routes/payments');
-const adminRoutes = require('./routes/admin');
+import authRoutes from './routes/auth.js';
+import userRoutes from './routes/users.js';
+import courseRoutes from './routes/courses.js';
+import enrollmentRoutes from './routes/enrollments.js';
+import lessonRoutes from './routes/lessons.js';
+import assignmentRoutes from './routes/assignments.js';
+import adminRoutes from './routes/admin.js';
 
 // Import middleware
-const { errorHandler } = require('./middleware/errorHandler');
-const { notFound } = require('./middleware/notFound');
+import { errorHandler } from './middleware/errorHandler.js';
+import { notFound } from './middleware/notFound.js';
 
 const app = express();
 
@@ -64,7 +70,6 @@ app.use('/api/courses', courseRoutes);
 app.use('/api/enrollments', enrollmentRoutes);
 app.use('/api/lessons', lessonRoutes);
 app.use('/api/assignments', assignmentRoutes);
-app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 
 // Health check endpoint
@@ -82,24 +87,11 @@ app.get('/api/health', (req, res) => {
 app.use(notFound);
 app.use(errorHandler);
 
-// Database connection and sync
+// Database connection
 const connectDB = async () => {
   try {
     // Test connection
     await testConnection();
-    
-    // Setup model associations
-    setupAssociations();
-    
-    // Sync database (create tables if they don't exist)
-    if (process.env.NODE_ENV === 'development') {
-      await sequelize.sync({ alter: true });
-      console.log('✅ Database synced in development mode');
-    } else {
-      await sequelize.sync();
-      console.log('✅ Database synced in production mode');
-    }
-    
     console.log('✅ Database connection established successfully');
   } catch (error) {
     console.error('❌ Database connection error:', error);
@@ -128,4 +120,4 @@ process.on('unhandledRejection', (err, promise) => {
   process.exit(1);
 });
 
-module.exports = app;
+export default app;

@@ -1,26 +1,34 @@
-const express = require('express');
-const { body, validationResult } = require('express-validator');
-const Assignment = require('../models/Assignment');
-const Course = require('../models/Course');
-const { protect, authorize } = require('../middleware/auth');
-const { upload } = require('../middleware/upload');
-const { createError } = require('../utils/errors');
+import express from 'express';
+import { body, validationResult } from 'express-validator';
+import { protect, authorize } from '../middleware/auth.js';
+import { prisma } from '../config/prisma.js';
 
 const router = express.Router();
 
-// Apply auth middleware to all routes
-router.use(protect);
+// Validation middleware helper
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      errors: errors.array()
+    });
+  }
+  next();
+};
 
-// @desc    Get assignments by course
+// @desc    Get assignments for a course
 // @route   GET /api/assignments/course/:courseId
-// @access  Public
-router.get('/course/:courseId', async (req, res, next) => {
+// @access  Private (enrolled students/instructor)
+router.get('/course/:courseId', protect, async (req, res, next) => {
   try {
     const { courseId } = req.params;
-    const { status = 'published' } = req.query;
 
-    // Check if course exists
-    const course = await Course.findById(courseId);
+    // Check if user has access to the course
+    const course = await prisma.course.findUnique({
+      where: { id: courseId }
+    });
+
     if (!course) {
       return res.status(404).json({
         success: false,
@@ -28,8 +36,45 @@ router.get('/course/:courseId', async (req, res, next) => {
       });
     }
 
-    const assignments = await Assignment.findByCourse(courseId, { status })
-      .sort({ dueDate: 1 });
+    const isInstructor = course.instructorId === req.user.id;
+    let isEnrolled = false;
+
+    if (!isInstructor && req.user.role !== 'admin') {
+      const enrollment = await prisma.enrollment.findUnique({
+        where: {
+          courseId_studentId: {
+            courseId,
+            studentId: req.user.id
+          }
+        }
+      });
+      isEnrolled = !!enrollment;
+
+      if (!isEnrolled) {
+        return res.status(403).json({
+          success: false,
+          message: 'You must be enrolled in this course to view assignments'
+        });
+      }
+    }
+
+    const assignments = await prisma.assignment.findMany({
+      where: { courseId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        lesson: {
+          select: {
+            id: true,
+            title: true
+          }
+        },
+        _count: {
+          select: {
+            submissions: true
+          }
+        }
+      }
+    });
 
     res.status(200).json({
       success: true,
@@ -42,12 +87,29 @@ router.get('/course/:courseId', async (req, res, next) => {
 
 // @desc    Get single assignment
 // @route   GET /api/assignments/:id
-// @access  Public
-router.get('/:id', async (req, res, next) => {
+// @access  Private (enrolled students/instructor)
+router.get('/:id', protect, async (req, res, next) => {
   try {
-    const assignment = await Assignment.findById(req.params.id)
-      .populate('course', 'title instructor status')
-      .populate('submissions.student', 'name avatar');
+    const { id } = req.params;
+
+    const assignment = await prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        course: {
+          select: {
+            id: true,
+            title: true,
+            instructorId: true
+          }
+        },
+        lesson: {
+          select: {
+            id: true,
+            title: true
+          }
+        }
+      }
+    });
 
     if (!assignment) {
       return res.status(404).json({
@@ -56,17 +118,49 @@ router.get('/:id', async (req, res, next) => {
       });
     }
 
-    // Check if assignment is published
-    if (assignment.status !== 'published') {
-      return res.status(404).json({
-        success: false,
-        message: 'Assignment not found'
+    // Check access permissions
+    const isInstructor = assignment.course.instructorId === req.user.id;
+    let isEnrolled = false;
+
+    if (!isInstructor && req.user.role !== 'admin') {
+      const enrollment = await prisma.enrollment.findUnique({
+        where: {
+          courseId_studentId: {
+            courseId: assignment.courseId,
+            studentId: req.user.id
+          }
+        }
+      });
+      isEnrolled = !!enrollment;
+
+      if (!isEnrolled) {
+        return res.status(403).json({
+          success: false,
+          message: 'You must be enrolled in this course to view this assignment'
+        });
+      }
+    }
+
+    // Get user's submission if they're a student
+    let userSubmission = null;
+    if (req.user.role === 'student') {
+      userSubmission = await prisma.assignmentSubmission.findFirst({
+        where: {
+          assignmentId: id,
+          studentId: req.user.id
+        },
+        orderBy: {
+          attempt: 'desc'
+        }
       });
     }
 
     res.status(200).json({
       success: true,
-      data: { assignment }
+      data: { 
+        assignment,
+        userSubmission
+      }
     });
   } catch (error) {
     next(error);
@@ -75,101 +169,95 @@ router.get('/:id', async (req, res, next) => {
 
 // @desc    Create assignment
 // @route   POST /api/assignments
-// @access  Private/Instructor
-router.post('/', [
-  authorize('instructor', 'admin'),
-  upload.fields([
-    { name: 'attachments', maxCount: 5 }
-  ]),
+// @access  Private (Instructor/Admin)
+router.post('/', protect, authorize('instructor', 'admin'), [
   body('title')
     .trim()
-    .isLength({ min: 5, max: 100 })
-    .withMessage('Title must be between 5 and 100 characters'),
-  body('course')
-    .isMongoId()
-    .withMessage('Valid course ID is required'),
+    .isLength({ min: 3, max: 200 })
+    .withMessage('Title must be between 3 and 200 characters'),
   body('description')
     .trim()
-    .isLength({ min: 10, max: 2000 })
-    .withMessage('Description must be between 10 and 2000 characters'),
+    .isLength({ min: 10 })
+    .withMessage('Description must be at least 10 characters'),
   body('type')
-    .isIn(['essay', 'project', 'quiz', 'presentation', 'code', 'other'])
+    .isIn(['quiz', 'essay', 'project', 'file_upload', 'peer_review'])
     .withMessage('Invalid assignment type'),
-  body('dueDate')
-    .isISO8601()
-    .withMessage('Valid due date is required'),
-  body('points')
+  body('courseId')
+    .notEmpty()
+    .withMessage('Course ID is required'),
+  body('maxScore')
+    .optional()
     .isInt({ min: 1 })
-    .withMessage('Points must be a positive integer')
+    .withMessage('Max score must be a positive integer'),
+  handleValidationErrors
 ], async (req, res, next) => {
   try {
-    // Check for validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        errors: errors.array()
-      });
-    }
-
     const {
       title,
-      course,
-      lesson,
       description,
-      instructions,
       type,
+      instructions,
       dueDate,
-      points,
-      maxAttempts,
-      isRequired,
-      allowLateSubmission,
-      latePenalty,
-      plagiarismCheck
+      maxScore = 100,
+      isRequired = true,
+      allowLateSubmission = false,
+      courseId,
+      lessonId,
+      settings = {}
     } = req.body;
 
-    // Check if course exists and user is the instructor
-    const courseDoc = await Course.findById(course);
-    if (!courseDoc) {
+    // Check if user owns the course
+    const course = await prisma.course.findUnique({
+      where: { id: courseId }
+    });
+
+    if (!course) {
       return res.status(404).json({
         success: false,
         message: 'Course not found'
       });
     }
 
-    if (courseDoc.instructor.toString() !== req.user.id && req.user.role !== 'admin') {
+    if (course.instructorId !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
         message: 'Not authorized to create assignments for this course'
       });
     }
 
-    // Handle file uploads
-    let attachments = [];
-    if (req.files.attachments) {
-      attachments = req.files.attachments.map(file => ({
-        name: file.originalname,
-        url: file.path,
-        type: file.mimetype,
-        size: file.size
-      }));
-    }
-
-    const assignment = await Assignment.create({
-      title,
-      course,
-      lesson,
-      description,
-      instructions,
-      type,
-      dueDate,
-      points: parseInt(points),
-      maxAttempts: maxAttempts || 1,
-      isRequired: isRequired !== false,
-      attachments,
-      allowLateSubmission: allowLateSubmission || false,
-      latePenalty: latePenalty || 0,
-      plagiarismCheck: plagiarismCheck || false
+    const assignment = await prisma.assignment.create({
+      data: {
+        title,
+        description,
+        type,
+        instructions,
+        dueDate: dueDate ? new Date(dueDate) : null,
+        maxScore: parseInt(maxScore),
+        isRequired,
+        allowLateSubmission,
+        courseId,
+        lessonId: lessonId || null,
+        settings: {
+          allowMultipleAttempts: false,
+          maxAttempts: 1,
+          timeLimit: null,
+          ...settings
+        }
+      },
+      include: {
+        course: {
+          select: {
+            id: true,
+            title: true
+          }
+        },
+        lesson: {
+          select: {
+            id: true,
+            title: true
+          }
+        }
+      }
     });
 
     res.status(201).json({
@@ -182,36 +270,33 @@ router.post('/', [
   }
 });
 
-// @desc    Update assignment
-// @route   PUT /api/assignments/:id
-// @access  Private/Instructor
-router.put('/:id', [
-  authorize('instructor', 'admin'),
-  upload.fields([
-    { name: 'attachments', maxCount: 5 }
-  ]),
-  body('title')
+// @desc    Submit assignment
+// @route   POST /api/assignments/:id/submit
+// @access  Private (Student)
+router.post('/:id/submit', protect, [
+  body('content')
     .optional()
     .trim()
-    .isLength({ min: 5, max: 100 })
-    .withMessage('Title must be between 5 and 100 characters'),
-  body('dueDate')
+    .isLength({ min: 1 })
+    .withMessage('Content cannot be empty'),
+  body('attachments')
     .optional()
-    .isISO8601()
-    .withMessage('Valid due date is required')
+    .isArray()
+    .withMessage('Attachments must be an array'),
+  handleValidationErrors
 ], async (req, res, next) => {
   try {
-    // Check for validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        errors: errors.array()
-      });
-    }
+    const { id } = req.params;
+    const { content, attachments = [] } = req.body;
 
-    const assignment = await Assignment.findById(req.params.id);
-    
+    // Check if assignment exists
+    const assignment = await prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        course: true
+      }
+    });
+
     if (!assignment) {
       return res.status(404).json({
         success: false,
@@ -219,250 +304,70 @@ router.put('/:id', [
       });
     }
 
-    // Check if user is the instructor or admin
-    const course = await Course.findById(assignment.course);
-    if (course.instructor.toString() !== req.user.id && req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this assignment'
-      });
-    }
-
-    // Handle file uploads
-    if (req.files.attachments) {
-      assignment.attachments = req.files.attachments.map(file => ({
-        name: file.originalname,
-        url: file.path,
-        type: file.mimetype,
-        size: file.size
-      }));
-    }
-
-    // Update fields
-    const updateFields = [
-      'title', 'description', 'instructions', 'type', 'dueDate', 'points',
-      'maxAttempts', 'isRequired', 'allowLateSubmission', 'latePenalty',
-      'plagiarismCheck', 'rubric', 'status'
-    ];
-
-    updateFields.forEach(field => {
-      if (req.body[field] !== undefined) {
-        if (field === 'points' || field === 'maxAttempts' || field === 'latePenalty') {
-          assignment[field] = parseInt(req.body[field]);
-        } else if (field === 'dueDate') {
-          assignment[field] = new Date(req.body[field]);
-        } else if (field === 'rubric') {
-          assignment[field] = JSON.parse(req.body[field]);
-        } else {
-          assignment[field] = req.body[field];
+    // Check if user is enrolled
+    const enrollment = await prisma.enrollment.findUnique({
+      where: {
+        courseId_studentId: {
+          courseId: assignment.courseId,
+          studentId: req.user.id
         }
       }
     });
 
-    await assignment.save();
-
-    res.status(200).json({
-      success: true,
-      message: 'Assignment updated successfully',
-      data: { assignment }
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// @desc    Delete assignment
-// @route   DELETE /api/assignments/:id
-// @access  Private/Instructor
-router.delete('/:id', authorize('instructor', 'admin'), async (req, res, next) => {
-  try {
-    const assignment = await Assignment.findById(req.params.id);
-    
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Assignment not found'
-      });
-    }
-
-    // Check if user is the instructor or admin
-    const course = await Course.findById(assignment.course);
-    if (course.instructor.toString() !== req.user.id && req.user.role !== 'admin') {
+    if (!enrollment) {
       return res.status(403).json({
         success: false,
-        message: 'Not authorized to delete this assignment'
+        message: 'You must be enrolled in this course to submit assignments'
       });
     }
 
-    // Check if assignment has submissions
-    if (assignment.submissions.length > 0) {
+    // Check if assignment is past due
+    if (assignment.dueDate && new Date() > assignment.dueDate && !assignment.allowLateSubmission) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot delete assignment with existing submissions'
+        message: 'Assignment submission deadline has passed'
       });
     }
 
-    await assignment.remove();
-
-    res.status(200).json({
-      success: true,
-      message: 'Assignment deleted successfully'
+    // Check existing submissions
+    const existingSubmissions = await prisma.assignmentSubmission.findMany({
+      where: {
+        assignmentId: id,
+        studentId: req.user.id
+      }
     });
-  } catch (error) {
-    next(error);
-  }
-});
 
-// @desc    Submit assignment
-// @route   POST /api/assignments/:id/submit
-// @access  Private/Student
-router.post('/:id/submit', [
-  authorize('student'),
-  upload.fields([
-    { name: 'attachments', maxCount: 5 }
-  ]),
-  body('content')
-    .trim()
-    .isLength({ min: 1 })
-    .withMessage('Content is required')
-], async (req, res, next) => {
-  try {
-    // Check for validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
+    const maxAttempts = assignment.settings?.maxAttempts || 1;
+    const allowMultipleAttempts = assignment.settings?.allowMultipleAttempts || false;
+
+    if (!allowMultipleAttempts && existingSubmissions.length > 0) {
       return res.status(400).json({
         success: false,
-        errors: errors.array()
+        message: 'Multiple submissions are not allowed for this assignment'
       });
     }
 
-    const { content } = req.body;
-    const assignment = await Assignment.findById(req.params.id);
-    
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Assignment not found'
-      });
-    }
-
-    // Check if assignment is published
-    if (assignment.status !== 'published') {
+    if (existingSubmissions.length >= maxAttempts) {
       return res.status(400).json({
         success: false,
-        message: 'Assignment is not available for submission'
+        message: `Maximum number of attempts (${maxAttempts}) reached`
       });
     }
 
-    // Handle file uploads
-    let attachments = [];
-    if (req.files.attachments) {
-      attachments = req.files.attachments.map(file => ({
-        name: file.originalname,
-        url: file.path,
-        type: file.mimetype,
-        size: file.size
-      }));
-    }
+    const submission = await prisma.assignmentSubmission.create({
+      data: {
+        content,
+        attachments,
+        assignmentId: id,
+        studentId: req.user.id,
+        attempt: existingSubmissions.length + 1,
+        status: 'submitted'
+      }
+    });
 
-    // Submit assignment
-    await assignment.submitAssignment(req.user.id, content, attachments);
-
-    res.status(200).json({
+    res.status(201).json({
       success: true,
       message: 'Assignment submitted successfully',
-      data: { assignment }
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// @desc    Grade assignment submission
-// @route   PUT /api/assignments/:id/grade
-// @access  Private/Instructor
-router.put('/:id/grade', [
-  authorize('instructor', 'admin'),
-  body('studentId')
-    .isMongoId()
-    .withMessage('Valid student ID is required'),
-  body('score')
-    .isFloat({ min: 0, max: 100 })
-    .withMessage('Score must be between 0 and 100'),
-  body('feedback')
-    .optional()
-    .trim()
-    .isLength({ max: 1000 })
-    .withMessage('Feedback cannot be more than 1000 characters')
-], async (req, res, next) => {
-  try {
-    // Check for validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        errors: errors.array()
-      });
-    }
-
-    const { studentId, score, feedback } = req.body;
-    const assignment = await Assignment.findById(req.params.id);
-    
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Assignment not found'
-      });
-    }
-
-    // Check if user is the instructor or admin
-    const course = await Course.findById(assignment.course);
-    if (course.instructor.toString() !== req.user.id && req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to grade this assignment'
-      });
-    }
-
-    // Grade the submission
-    await assignment.gradeSubmission(studentId, score, feedback, req.user.id);
-
-    res.status(200).json({
-      success: true,
-      message: 'Assignment graded successfully',
-      data: { assignment }
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// @desc    Get student submission
-// @route   GET /api/assignments/:id/submission
-// @access  Private
-router.get('/:id/submission', async (req, res, next) => {
-  try {
-    const assignment = await Assignment.findById(req.params.id);
-    
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Assignment not found'
-      });
-    }
-
-    // Get student's submission
-    const submission = assignment.getStudentSubmission(req.user.id);
-
-    if (!submission) {
-      return res.status(404).json({
-        success: false,
-        message: 'No submission found for this assignment'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
       data: { submission }
     });
   } catch (error) {
@@ -470,40 +375,4 @@ router.get('/:id/submission', async (req, res, next) => {
   }
 });
 
-// @desc    Get assignment analytics (Instructor only)
-// @route   GET /api/assignments/:id/analytics
-// @access  Private/Instructor
-router.get('/:id/analytics', authorize('instructor', 'admin'), async (req, res, next) => {
-  try {
-    const assignment = await Assignment.findById(req.params.id);
-    
-    if (!assignment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Assignment not found'
-      });
-    }
-
-    // Check if user is the instructor or admin
-    const course = await Course.findById(assignment.course);
-    if (course.instructor.toString() !== req.user.id && req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to view analytics for this assignment'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: {
-        assignment,
-        analytics: assignment.analytics,
-        submissions: assignment.submissions
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-module.exports = router;
+export default router;

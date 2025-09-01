@@ -1,10 +1,21 @@
-const express = require('express');
-const { body, validationResult } = require('express-validator');
-const User = require('../models/User');
-const { protect, authorize } = require('../middleware/auth');
-const { createError } = require('../utils/errors');
+import express from 'express';
+import { body, validationResult } from 'express-validator';
+import { protect, authorize } from '../middleware/auth.js';
+import { prisma } from '../config/prisma.js';
 
 const router = express.Router();
+
+// Validation middleware helper
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      errors: errors.array()
+    });
+  }
+  next();
+};
 
 // Apply auth middleware to all routes
 router.use(protect);
@@ -14,56 +25,138 @@ router.use(protect);
 // @access  Private/Admin
 router.get('/', authorize('admin'), async (req, res, next) => {
   try {
-    const { page = 1, limit = 10, role, search, status } = req.query;
+    const { 
+      page = 1, 
+      limit = 10, 
+      role, 
+      search, 
+      isActive,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
     
-    // Build query
-    const query = {};
-    if (role) query.role = role;
-    if (status !== undefined) query.isActive = status === 'active';
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = parseInt(limit);
+
+    // Build where clause
+    const where = {};
+    
+    if (role) {
+      where.role = role;
+    }
+    
+    if (isActive !== undefined) {
+      where.isActive = isActive === 'true';
+    }
+    
     if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
+      where.OR = [
+        { firstName: { contains: search, mode: 'insensitive' } },
+        { lastName: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } }
       ];
     }
 
-    const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
-      select: '-password',
-      sort: { createdAt: -1 }
-    };
+    // Build orderBy clause
+    const orderBy = {};
+    orderBy[sortBy] = sortOrder;
 
-    const users = await User.paginate(query, options);
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        skip,
+        take,
+        orderBy,
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          role: true,
+          avatar: true,
+          isActive: true,
+          isEmailVerified: true,
+          lastLogin: true,
+          createdAt: true,
+          _count: {
+            select: {
+              coursesAsInstructor: true,
+              enrollments: true
+            }
+          }
+        }
+      }),
+      prisma.user.count({ where })
+    ]);
+
+    const totalPages = Math.ceil(total / take);
 
     res.status(200).json({
       success: true,
-      data: users
+      data: {
+        users,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages,
+          totalUsers: total,
+          hasNextPage: parseInt(page) < totalPages,
+          hasPrevPage: parseInt(page) > 1
+        }
+      }
     });
   } catch (error) {
     next(error);
   }
 });
 
-// @desc    Get single user
+// @desc    Get user by ID
 // @route   GET /api/users/:id
-// @access  Private
+// @access  Private (Admin or own profile)
 router.get('/:id', async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
-    
+    const { id } = req.params;
+
+    // Check if user is admin or requesting own profile
+    if (req.user.role !== 'admin' && req.user.id !== id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to access this user profile'
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        role: true,
+        avatar: true,
+        bio: true,
+        phone: true,
+        dateOfBirth: true,
+        address: true,
+        isActive: true,
+        isEmailVerified: true,
+        lastLogin: true,
+        preferences: true,
+        socialLinks: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: {
+          select: {
+            coursesAsInstructor: true,
+            enrollments: true
+          }
+        }
+      }
+    });
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
-      });
-    }
-
-    // Check if user can access this profile
-    if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to access this user profile'
       });
     }
 
@@ -76,15 +169,20 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
-// @desc    Update user (Admin or self)
+// @desc    Update user (Admin only)
 // @route   PUT /api/users/:id
-// @access  Private
-router.put('/:id', [
-  body('name')
+// @access  Private/Admin
+router.put('/:id', authorize('admin'), [
+  body('firstName')
     .optional()
     .trim()
     .isLength({ min: 2, max: 50 })
-    .withMessage('Name must be between 2 and 50 characters'),
+    .withMessage('First name must be between 2 and 50 characters'),
+  body('lastName')
+    .optional()
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Last name must be between 2 and 50 characters'),
   body('email')
     .optional()
     .isEmail()
@@ -93,81 +191,74 @@ router.put('/:id', [
   body('role')
     .optional()
     .isIn(['student', 'instructor', 'admin'])
-    .withMessage('Invalid role')
+    .withMessage('Role must be student, instructor, or admin'),
+  body('isActive')
+    .optional()
+    .isBoolean()
+    .withMessage('isActive must be a boolean'),
+  handleValidationErrors
 ], async (req, res, next) => {
   try {
-    // Check for validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        errors: errors.array()
-      });
-    }
+    const { id } = req.params;
+    const updateData = { ...req.body };
 
-    const { name, email, role, bio, phone, isActive, isVerified } = req.body;
+    // Check if user exists
+    const existingUser = await prisma.user.findUnique({
+      where: { id }
+    });
 
-    // Check if user can update this profile
-    if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this user profile'
-      });
-    }
-
-    // Only admins can change roles and verification status
-    if ((role || isVerified !== undefined) && req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to change role or verification status'
-      });
-    }
-
-    const user = await User.findById(req.params.id);
-    if (!user) {
+    if (!existingUser) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
-    // Check if email is already taken
-    if (email && email !== user.email) {
-      const existingUser = await User.findOne({ email: email.toLowerCase() });
-      if (existingUser) {
+    // If updating email, check if it's already taken
+    if (updateData.email && updateData.email !== existingUser.email) {
+      const emailExists = await prisma.user.findUnique({
+        where: { email: updateData.email }
+      });
+
+      if (emailExists) {
         return res.status(400).json({
           success: false,
-          message: 'Email is already taken'
+          message: 'Email already in use'
         });
       }
     }
 
-    // Update fields
-    if (name) user.name = name;
-    if (email) user.email = email.toLowerCase();
-    if (role) user.role = role;
-    if (bio !== undefined) user.bio = bio;
-    if (phone !== undefined) user.phone = phone;
-    if (isActive !== undefined) user.isActive = isActive;
-    if (isVerified !== undefined) user.isVerified = isVerified;
+    // Convert string dates if provided
+    if (updateData.dateOfBirth) {
+      updateData.dateOfBirth = new Date(updateData.dateOfBirth);
+    }
 
-    await user.save();
+    const updatedUser = await prisma.user.update({
+      where: { id },
+      data: updateData,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        role: true,
+        avatar: true,
+        bio: true,
+        phone: true,
+        dateOfBirth: true,
+        address: true,
+        isActive: true,
+        isEmailVerified: true,
+        preferences: true,
+        socialLinks: true,
+        updatedAt: true
+      }
+    });
 
     res.status(200).json({
       success: true,
       message: 'User updated successfully',
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          bio: user.bio,
-          phone: user.phone,
-          isActive: user.isActive,
-          isVerified: user.isVerified
-        }
-      }
+      data: { user: updatedUser }
     });
   } catch (error) {
     next(error);
@@ -179,8 +270,20 @@ router.put('/:id', [
 // @access  Private/Admin
 router.delete('/:id', authorize('admin'), async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id);
-    
+    const { id } = req.params;
+
+    // Prevent admin from deleting themselves
+    if (req.user.id === id) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot delete your own account'
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id }
+    });
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -188,15 +291,9 @@ router.delete('/:id', authorize('admin'), async (req, res, next) => {
       });
     }
 
-    // Prevent admin from deleting themselves
-    if (user._id.toString() === req.user.id) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot delete your own account'
-      });
-    }
-
-    await user.remove();
+    await prisma.user.delete({
+      where: { id }
+    });
 
     res.status(200).json({
       success: true,
@@ -208,60 +305,52 @@ router.delete('/:id', authorize('admin'), async (req, res, next) => {
 });
 
 // @desc    Get user statistics (Admin only)
-// @route   GET /api/users/stats/overview
+// @route   GET /api/users/stats
 // @access  Private/Admin
-router.get('/stats/overview', authorize('admin'), async (req, res, next) => {
+router.get('/admin/stats', authorize('admin'), async (req, res, next) => {
   try {
-    const totalUsers = await User.countDocuments();
-    const activeUsers = await User.countDocuments({ isActive: true });
-    const verifiedUsers = await User.countDocuments({ isVerified: true });
-    const students = await User.countDocuments({ role: 'student' });
-    const instructors = await User.countDocuments({ role: 'instructor' });
-    const admins = await User.countDocuments({ role: 'admin' });
-
-    // Get recent registrations
-    const recentRegistrations = await User.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .select('name email role createdAt');
-
-    // Get users by month (last 6 months)
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-    const monthlyStats = await User.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: sixMonthsAgo }
-        }
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: '$createdAt' },
-            month: { $month: '$createdAt' }
-          },
-          count: { $sum: 1 }
-        }
-      },
-      {
-        $sort: { '_id.year': 1, '_id.month': 1 }
-      }
+    const [
+      totalUsers,
+      activeUsers,
+      students,
+      instructors,
+      admins,
+      verifiedUsers
+    ] = await Promise.all([
+      prisma.user.count(),
+      prisma.user.count({ where: { isActive: true } }),
+      prisma.user.count({ where: { role: 'student' } }),
+      prisma.user.count({ where: { role: 'instructor' } }),
+      prisma.user.count({ where: { role: 'admin' } }),
+      prisma.user.count({ where: { isEmailVerified: true } })
     ]);
+
+    // Get recent registrations (last 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const recentRegistrations = await prisma.user.count({
+      where: {
+        createdAt: {
+          gte: thirtyDaysAgo
+        }
+      }
+    });
 
     res.status(200).json({
       success: true,
       data: {
-        overview: {
-          totalUsers,
-          activeUsers,
-          verifiedUsers,
+        totalUsers,
+        activeUsers,
+        inactiveUsers: totalUsers - activeUsers,
+        verifiedUsers,
+        unverifiedUsers: totalUsers - verifiedUsers,
+        recentRegistrations,
+        usersByRole: {
           students,
           instructors,
           admins
-        },
-        recentRegistrations,
-        monthlyStats
+        }
       }
     });
   } catch (error) {
@@ -269,51 +358,4 @@ router.get('/stats/overview', authorize('admin'), async (req, res, next) => {
   }
 });
 
-// @desc    Bulk update users (Admin only)
-// @route   PUT /api/users/bulk-update
-// @access  Private/Admin
-router.put('/bulk-update', authorize('admin'), [
-  body('userIds')
-    .isArray({ min: 1 })
-    .withMessage('User IDs array is required'),
-  body('updates')
-    .isObject()
-    .withMessage('Updates object is required')
-], async (req, res, next) => {
-  try {
-    // Check for validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        errors: errors.array()
-      });
-    }
-
-    const { userIds, updates } = req.body;
-
-    // Prevent updating critical fields in bulk
-    const allowedUpdates = { ...updates };
-    delete allowedUpdates.password;
-    delete allowedUpdates.email;
-    delete allowedUpdates.role;
-
-    const result = await User.updateMany(
-      { _id: { $in: userIds } },
-      { $set: allowedUpdates }
-    );
-
-    res.status(200).json({
-      success: true,
-      message: `Updated ${result.modifiedCount} users successfully`,
-      data: {
-        modifiedCount: result.modifiedCount,
-        matchedCount: result.matchedCount
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-module.exports = router;
+export default router;

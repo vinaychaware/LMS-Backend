@@ -1,4 +1,4 @@
-const nodemailer = require('nodemailer');
+import nodemailer from 'nodemailer';
 
 // Create transporter
 const createTransporter = () => {
@@ -239,32 +239,9 @@ const sendCourseAnnouncement = async (students, course, announcement) => {
   return Promise.all(emailPromises);
 };
 
-// Send payment confirmation
-const sendPaymentConfirmation = async (user, payment, course) => {
-  const message = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <h2 style="color: #10B981;">Payment Confirmed</h2>
-      <p>Hi ${user.name},</p>
-      <p>Your payment has been confirmed successfully!</p>
-      <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0;">
-        <p><strong>Course:</strong> ${course.title}</p>
-        <p><strong>Amount:</strong> $${payment.amount}</p>
-        <p><strong>Transaction ID:</strong> ${payment.transactionId}</p>
-        <p><strong>Date:</strong> ${new Date(payment.processedAt).toLocaleDateString()}</p>
-      </div>
-      <p>You now have full access to the course content.</p>
-      <p>Happy learning!<br>The EduSphere Team</p>
-    </div>
-  `;
 
-  return sendEmail({
-    email: user.email,
-    subject: `Payment Confirmed - ${course.title}`,
-    message
-  });
-};
 
-module.exports = {
+export {
   sendEmail,
   sendWelcomeEmail,
   sendEnrollmentConfirmation,
@@ -272,6 +249,5 @@ module.exports = {
   sendAssignmentReminder,
   sendPasswordResetEmail,
   sendVerificationEmail,
-  sendCourseAnnouncement,
-  sendPaymentConfirmation
+  sendCourseAnnouncement
 };

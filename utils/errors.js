@@ -192,7 +192,7 @@ const monitorError = (error, req = null) => {
   // Example: Sentry.captureException(error);
 };
 
-module.exports = {
+export {
   ApiError,
   createError,
   createValidationError,

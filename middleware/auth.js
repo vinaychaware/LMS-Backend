@@ -1,5 +1,5 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+import jwt from 'jsonwebtoken';
+import { prisma } from '../config/prisma.js';
 
 // Protect routes - verify JWT token
 const protect = async (req, res, next) => {
@@ -28,7 +28,10 @@ const protect = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Get user from token
-    const user = await User.findById(decoded.id);
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId }
+    });
+    
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -278,7 +281,7 @@ const checkLessonAccess = async (req, res, next) => {
   }
 };
 
-module.exports = {
+export {
   protect,
   authorize,
   authorizeStudent,
