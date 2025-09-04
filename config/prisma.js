@@ -1,13 +1,23 @@
+// config/prisma.js  (ESM)
 import { PrismaClient } from '@prisma/client';
 
-// Create a single instance of Prisma Client
-const prisma = new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['query', 'info', 'warn', 'error'] : ['error'],
-  errorFormat: 'colorless',
-});
+const isDev = process.env.NODE_ENV === 'development';
 
-// Test database connection
-const testConnection = async () => {
+// Reuse a single Prisma instance across hot-reloads
+const globalForPrisma = globalThis;
+const prismaInstance =
+  globalForPrisma.__prisma__ ||
+  new PrismaClient({
+    log: isDev ? ['query', 'info', 'warn', 'error'] : ['error'],
+    errorFormat: 'colorless', // 'pretty' | 'colorless' | 'minimal'
+  });
+
+if (isDev) globalForPrisma.__prisma__ = prismaInstance;
+
+const prisma = prismaInstance;
+
+// Connection test (call once at startup)
+export const testConnection = async () => {
   try {
     await prisma.$connect();
     console.log('✅ Database connected successfully');
@@ -18,8 +28,7 @@ const testConnection = async () => {
   }
 };
 
-// Graceful shutdown
-const disconnectDatabase = async () => {
+export const disconnectDatabase = async () => {
   try {
     await prisma.$disconnect();
     console.log('✅ Database disconnected successfully');
@@ -28,23 +37,26 @@ const disconnectDatabase = async () => {
   }
 };
 
-// Handle process termination
-process.on('beforeExit', async () => {
-  await disconnectDatabase();
-});
+// Install graceful shutdown hooks once
+let hooksInstalled = false;
+const installShutdownHooks = () => {
+  if (hooksInstalled) return;
+  hooksInstalled = true;
 
-process.on('SIGTERM', async () => {
-  await disconnectDatabase();
-  process.exit(0);
-});
+  process.on('beforeExit', async () => {
+    await disconnectDatabase();
+  });
 
-process.on('SIGINT', async () => {
-  await disconnectDatabase();
-  process.exit(0);
-});
+  process.on('SIGTERM', async () => {
+    await disconnectDatabase();
+    process.exit(0);
+  });
 
-export {
-  prisma,
-  testConnection,
-  disconnectDatabase
+  process.on('SIGINT', async () => {
+    await disconnectDatabase();
+    process.exit(0);
+  });
 };
+installShutdownHooks();
+
+export { prisma };

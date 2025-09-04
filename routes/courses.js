@@ -1,107 +1,54 @@
-import express from 'express';
-import { body, validationResult } from 'express-validator';
-import { protect, authorize } from '../middleware/auth.js';
-import {
-  getCourses,
-  getCourse,
-  createCourse,
-  updateCourse,
-  deleteCourse,
-  getInstructorCourses,
-  getCategories
-} from '../controllers/coursesController.js';
-
+// routes/courses.js
+import express from "express";
+import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
 const router = express.Router();
 
-// Validation middleware helper
-const handleValidationErrors = (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({
-      success: false,
-      errors: errors.array()
-    });
+const up = (s) => String(s || "").toUpperCase();
+function requireAdminOrAllowedInstructor(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+  const r = up(req.user.role);
+  if (r === "SUPER_ADMIN" || r === "ADMIN") return next();
+  if (r === "INSTRUCTOR" && req.user.permissions?.canCreateCourses) return next();
+  return res.status(403).json({ error: "Forbidden" });
+}
+
+// List all courses (admins/SA)
+router.get("/", async (_req, res) => {
+  const rows = await prisma.course.findMany({
+    include: { enrollments: true, instructors: { include: { instructor: { select: { fullName: true } } } } },
+  });
+  res.json(rows.map((c) => ({
+    id: c.id, title: c.title, thumbnail: c.thumbnail, status: c.status,
+    studentCount: c.enrollments.length,
+    instructorNames: c.instructors.map((i) => i.instructor.fullName),
+  })));
+});
+
+// Create (admin/SA or permitted instructor)
+router.post("/", requireAdminOrAllowedInstructor, async (req, res) => {
+  const { title, thumbnail, status = "draft", managerId } = req.body || {};
+  const creatorId = req.user.id;
+  if (!title) return res.status(400).json({ error: "title required" });
+  const created = await prisma.course.create({ data: { title, thumbnail, status, creatorId, managerId } });
+  res.json({ id: created.id });
+});
+
+// Update course (admin/SA)
+router.patch("/:id", async (req, res) => {
+  const { id } = req.params;
+  const updated = await prisma.course.update({ where: { id }, data: req.body || {} });
+  res.json({ id: updated.id });
+});
+
+// Replace instructors set
+router.post("/:id/instructors", async (req, res) => {
+  const { id } = req.params; const { instructorIds = [] } = req.body || {};
+  await prisma.courseInstructor.deleteMany({ where: { courseId: id } });
+  if (instructorIds.length) {
+    await prisma.courseInstructor.createMany({ data: instructorIds.map((x) => ({ courseId: id, instructorId: x })), skipDuplicates: true });
   }
-  next();
-};
-
-// @desc    Get all courses
-// @route   GET /api/courses
-// @access  Public
-router.get('/', getCourses);
-
-// @desc    Get course categories
-// @route   GET /api/courses/categories
-// @access  Public
-router.get('/categories', getCategories);
-
-// @desc    Get instructor courses
-// @route   GET /api/courses/instructor/my-courses
-// @access  Private (Instructor)
-router.get('/instructor/my-courses', protect, authorize('instructor', 'admin'), getInstructorCourses);
-
-// @desc    Create course
-// @route   POST /api/courses
-// @access  Private (Instructor/Admin)
-router.post('/', protect, authorize('instructor', 'admin'), [
-  body('title')
-    .trim()
-    .isLength({ min: 5, max: 200 })
-    .withMessage('Title must be between 5 and 200 characters'),
-  body('description')
-    .trim()
-    .isLength({ min: 20, max: 2000 })
-    .withMessage('Description must be between 20 and 2000 characters'),
-  body('category')
-    .trim()
-    .notEmpty()
-    .withMessage('Category is required'),
-  body('price')
-    .optional()
-    .isFloat({ min: 0 })
-    .withMessage('Price must be a positive number'),
-  body('level')
-    .optional()
-    .isIn(['beginner', 'intermediate', 'advanced'])
-    .withMessage('Level must be beginner, intermediate, or advanced'),
-  handleValidationErrors,
-  createCourse
-]);
-
-// @desc    Get single course
-// @route   GET /api/courses/:id
-// @access  Public
-router.get('/:id', getCourse);
-
-// @desc    Update course
-// @route   PUT /api/courses/:id
-// @access  Private (Instructor/Admin)
-router.put('/:id', protect, authorize('instructor', 'admin'), [
-  body('title')
-    .optional()
-    .trim()
-    .isLength({ min: 5, max: 200 })
-    .withMessage('Title must be between 5 and 200 characters'),
-  body('description')
-    .optional()
-    .trim()
-    .isLength({ min: 20, max: 2000 })
-    .withMessage('Description must be between 20 and 2000 characters'),
-  body('price')
-    .optional()
-    .isFloat({ min: 0 })
-    .withMessage('Price must be a positive number'),
-  body('level')
-    .optional()
-    .isIn(['beginner', 'intermediate', 'advanced'])
-    .withMessage('Level must be beginner, intermediate, or advanced'),
-  handleValidationErrors,
-  updateCourse
-]);
-
-// @desc    Delete course
-// @route   DELETE /api/courses/:id
-// @access  Private (Instructor/Admin)
-router.delete('/:id', protect, authorize('instructor', 'admin'), deleteCourse);
+  res.json({ ok: true, count: instructorIds.length });
+});
 
 export default router;
