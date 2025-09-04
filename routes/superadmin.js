@@ -1,4 +1,3 @@
-// src/routes/superadmin.js
 import express from "express";
 import { PrismaClient } from "@prisma/client";
 
@@ -33,6 +32,58 @@ function requireSuperAdmin(req, res, next) {
   next();
 }
 
+// router.get("/overview", requireSuperAdmin, async (_req, res) => {
+//   const [users, totalCourses] = await Promise.all([
+//     prisma.user.findMany({ select: { role: true, isActive: true } }),
+//     prisma.course.count(),
+//   ]);
+
+//   const totalAdmins = users.filter((u) => ["ADMIN", "SUPER_ADMIN"].includes(up(u.role))).length;
+//   const totalInstructors = users.filter((u) => up(u.role) === "INSTRUCTOR").length;
+//   const totalStudents = users.filter((u) => up(u.role) === "STUDENT").length;
+//   const activeUsers = users.filter((u) => u.isActive).length;
+
+//   const courseRows = await prisma.course.findMany({
+//     select: {
+//       id: true,
+//       title: true,
+//       status: true,
+//       instructors: { select: { id: true } },
+//       enrollments: { select: { id: true } },
+//     },
+//   });
+
+//   const courseBreakdown = {};
+//   for (const c of courseRows) {
+//     courseBreakdown[c.id] = {
+//       title: c.title,
+//       status: c.status,
+//       instructors: c.instructors.length,
+//       students: c.enrollments.length,
+//     };
+//   }
+
+//   const performanceMetrics = {
+//     apiUsage: 47,
+//     dbUsage: 61,
+//     errorRate: 1.1,
+//     avgResponseTimeMs: 118,
+//     backgroundJobs: 33,
+//   };
+
+//   const overview = {
+//     totalAdmins,
+//     totalInstructors,
+//     totalStudents,
+//     totalCourses,
+//     systemUptime: "99.9%",
+//     activeUsers,
+//     avgCourseCompletion: 64,
+//     totalRevenue: 0,
+//   };
+
+//   res.json({ overview, courseBreakdown, performanceMetrics });
+// });
 
 router.get("/overview", requireSuperAdmin, async (_req, res) => {
   const [users, totalCourses] = await Promise.all([
@@ -40,10 +91,11 @@ router.get("/overview", requireSuperAdmin, async (_req, res) => {
     prisma.course.count(),
   ]);
 
-  const totalAdmins = users.filter((u) => ["ADMIN", "SUPER_ADMIN"].includes(up(u.role))).length;
+  const totalSuperAdmins = users.filter((u) => up(u.role) === "SUPER_ADMIN").length;
+  const totalAdmins      = users.filter((u) => up(u.role) === "ADMIN").length;   // <-- only ADMIN
   const totalInstructors = users.filter((u) => up(u.role) === "INSTRUCTOR").length;
-  const totalStudents = users.filter((u) => up(u.role) === "STUDENT").length;
-  const activeUsers = users.filter((u) => u.isActive).length;
+  const totalStudents    = users.filter((u) => up(u.role) === "STUDENT").length;
+  const activeUsers      = users.filter((u) => u.isActive).length;
 
   const courseRows = await prisma.course.findMany({
     select: {
@@ -74,7 +126,8 @@ router.get("/overview", requireSuperAdmin, async (_req, res) => {
   };
 
   const overview = {
-    totalAdmins,
+    totalAdmins,         
+    totalSuperAdmins,   
     totalInstructors,
     totalStudents,
     totalCourses,
@@ -90,11 +143,22 @@ router.get("/overview", requireSuperAdmin, async (_req, res) => {
 
 router.get("/admins", requireSuperAdmin, async (_req, res) => {
   const rows = await prisma.user.findMany({
-    where: { OR: [{ role: "SUPER_ADMIN" }, { role: "ADMIN" }, { role: "super_admin" }, { role: "admin" }] },
-    select: { id: true, fullName: true, email: true, role: true, isActive: true, permissions: true },
+    where: {
+      role: { equals: "ADMIN", mode: "insensitive" }  
+    },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      role: true,
+      isActive: true,
+    },
   });
+
   res.json(rows.map(toUserPayload));
 });
+
+
 
 
 router.get("/instructors", requireSuperAdmin, async (_req, res) => {
@@ -127,22 +191,10 @@ router.get("/students", requireSuperAdmin, async (_req, res) => {
 });
 
 
-router.patch("/users/:id/permissions", requireSuperAdmin, async (req, res) => {
-  const { id } = req.params;
-  const permissions = req.body || {};
-
-
-  const target = await prisma.user.findUnique({ where: { id } });
-  if (!target) return res.status(404).json({ error: "User not found" });
-
-  const updated = await prisma.user.update({
-    where: { id },
-    data: { permissions },
-    select: { id: true, fullName: true, email: true, role: true, isActive: true, permissions: true },
-  });
-
-  res.json(toUserPayload(updated));
+router.patch("/users/:id/permissions", requireSuperAdmin, async (_req, res) => {
+  return res.status(501).json({ error: "Permissions not supported on User model" });
 });
+
 
 
 router.post("/users/bulk-update", requireSuperAdmin, async (req, res) => {
@@ -175,26 +227,52 @@ router.delete("/users/:id", requireSuperAdmin, async (req, res) => {
 });
 
 
+// router.get("/courses", requireSuperAdmin, async (_req, res) => {
+//   const rows = await prisma.course.findMany({
+//     include: {
+//       instructors: { include: { instructor: { select: { id: true, fullName: true } } } },
+//       enrollments: { select: { id: true } },
+//       creator: { select: { id: true, fullName: true, role: true } },
+//       manager: { select: { id: true, fullName: true, role: true } },
+//     },
+//   });
+
+//   const data = rows.map((c) => ({
+//     ...toCoursePayload(c),
+//     instructorNames: c.instructors.map((i) => i.instructor.fullName),
+//     studentCount: c.enrollments.length,
+//     creatorName: c.creator?.fullName ?? null,
+//     managerName: c.manager?.fullName ?? null,
+//   }));
+
+//   res.json(data);
+// });
+// src/routes/superadmin.js
 router.get("/courses", requireSuperAdmin, async (_req, res) => {
   const rows = await prisma.course.findMany({
-    include: {
-      instructors: { include: { instructor: { select: { id: true, fullName: true } } } },
-      enrollments: { select: { id: true } },
-      creator: { select: { id: true, fullName: true, role: true } },
-      manager: { select: { id: true, fullName: true, role: true } },
+    select: {
+      id: true,
+      title: true,
+      thumbnail: true,
+      status: true,
+      creatorId: true,   
+      managerId: true,   
     },
   });
 
-  const data = rows.map((c) => ({
-    ...toCoursePayload(c),
-    instructorNames: c.instructors.map((i) => i.instructor.fullName),
-    studentCount: c.enrollments.length,
-    creatorName: c.creator?.fullName ?? null,
-    managerName: c.manager?.fullName ?? null,
-  }));
-
-  res.json(data);
+  // return a PLAIN ARRAY
+  res.json(
+    rows.map((c) => ({
+      id: c.id,
+      title: c.title,
+      thumbnail: c.thumbnail,
+      status: c.status,
+      creatorId: c.creatorId ?? null,
+      managerId: c.managerId ?? null,
+    }))
+  );
 });
+
 
 
 router.post("/courses", requireSuperAdmin, async (req, res) => {

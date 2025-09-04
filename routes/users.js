@@ -1,13 +1,18 @@
-// routes/users.js (ESM)
 import express from "express";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";           
 import { body, validationResult } from "express-validator";
 import { protect } from "../middleware/auth.js";
 import { prisma } from "../config/prisma.js";
 
 const router = express.Router();
+
 const signToken = (user) =>
-  jwt.sign({ sub: user.id, role: user.role }, process.env.JWT_SECRET || 'dev-secret', { expiresIn: '7d' });
+  jwt.sign(                              
+    { sub: user.id, role: user.role },
+    process.env.JWT_SECRET || "dev-secret",
+    { expiresIn: "7d" }
+  );
 
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
@@ -15,6 +20,80 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 const normalizeEmail = (e) => (typeof e === "string" ? e.trim().toLowerCase() : e);
+
+// 🔓 PUBLIC ROUTES FIRST
+router.post('/register',
+  [
+    body('fullName').exists().trim().isLength({ min: 2, max: 100 }).withMessage('fullName is required (2–100 chars)'),
+    body('email').exists().isEmail().withMessage('Valid email required'),
+    body('password').exists().isLength({ min: 6 }).withMessage('Password must be at least 6 chars'),
+    body('role').optional().isString(),
+    handleValidationErrors,
+  ],
+  async (req, res, next) => {
+    try {
+      const fullName = String(req.body.fullName).trim();
+      const email = normalizeEmail(req.body.email);
+      const password = req.body.password;
+      const requested = String(req.body.role || 'STUDENT').toUpperCase();
+
+      const exists = await prisma.user.findUnique({ where: { email } });
+      if (exists) return res.status(400).json({ success: false, message: 'Email already in use' });
+
+      const userCount = await prisma.user.count();
+
+      let finalRole;
+      if (userCount === 0) {
+        finalRole = requested === 'SUPER_ADMIN' ? 'SUPER_ADMIN' : 'STUDENT';
+      } else {
+        const allowed = ['STUDENT', 'INSTRUCTOR', 'ADMIN'];
+        if (!allowed.includes(requested)) {
+          return res.status(400).json({
+            success: false,
+            message: 'Role must be student, instructor, or admin (SUPER_ADMIN only allowed for first registered user)',
+          });
+        }
+        finalRole = requested;
+      }
+
+      const hash = await bcrypt.hash(password, 10);
+      const created = await prisma.user.create({
+        data: { fullName, email, password: hash, role: finalRole, isActive: true, permissions: req.body.permissions ?? {} },
+        select: { id: true, fullName: true, email: true, role: true, isActive: true, permissions: true },
+      });
+
+      const token = signToken(created);
+      return res.status(201).json({ success: true, data: { user: created, token } });
+    } catch (err) {
+      if (err.code === 'P2002') return res.status(400).json({ success: false, message: 'Email already in use' });
+      next(err);
+    }
+  }
+);
+
+router.post('/login', async (req, res, next) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const { password } = req.body;
+    if (!email || !password) return res.status(400).json({ success: false, message: 'email and password are required' });
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+    const token = signToken(user);
+    const payload = {
+      id: user.id, fullName: user.fullName, email: user.email,
+      role: user.role, isActive: user.isActive, permissions: user.permissions || {},
+    };
+
+    res.json({ success: true, data: { user: payload, token } });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.use(protect);
 router.get("/me", async (req, res, next) => {
@@ -180,93 +259,8 @@ router.delete(
 );
 
 
-router.post(
-  '/register',
-  [
-    body('fullName').exists().trim().isLength({ min: 2, max: 100 }).withMessage('fullName is required (2–100 chars)'),
-    body('email').exists().isEmail().withMessage('Valid email required'),
-    body('password').exists().isLength({ min: 6 }).withMessage('Password must be at least 6 chars'),
-    // DO NOT restrict role here; decide in handler (so we can allow SUPER_ADMIN for the 1st user).
-    body('role').optional().isString(),
-    handleValidationErrors,
-  ],
-  async (req, res, next) => {
-    try {
-      const fullName = String(req.body.fullName).trim();
-      const email = normalizeEmail(req.body.email);
-      const password = req.body.password;
-      const requested = String(req.body.role || 'STUDENT').toUpperCase();
 
-      // Fail if email exists
-      const exists = await prisma.user.findUnique({ where: { email } });
-      if (exists) return res.status(400).json({ success: false, message: 'Email already in use' });
 
-      // Count users to decide bootstrap
-      const userCount = await prisma.user.count();
 
-      let finalRole;
-      if (userCount === 0) {
-        // Bootstrap: allow SUPER_ADMIN for the very first account
-        finalRole = requested === 'SUPER_ADMIN' ? 'SUPER_ADMIN' : 'STUDENT';
-      } else {
-        const allowed = ['STUDENT', 'INSTRUCTOR', 'ADMIN'];
-        if (!allowed.includes(requested)) {
-          return res.status(400).json({
-            success: false,
-            message: 'Role must be student, instructor, or admin (SUPER_ADMIN only allowed for first registered user)',
-          });
-        }
-        finalRole = requested;
-      }
-
-      const hash = await bcrypt.hash(password, 10);
-      const created = await prisma.user.create({
-        data: {
-          fullName,
-          email,
-          password: hash,
-          role: finalRole,
-          isActive: true,
-          permissions: req.body.permissions ?? {},
-        },
-        select: {
-          id: true, fullName: true, email: true, role: true, isActive: true, permissions: true,
-        },
-      });
-
-      const token = signToken(created);
-      return res.status(201).json({ success: true, data: { user: created, token } });
-    } catch (err) {
-      if (err.code === 'P2002') {
-        return res.status(400).json({ success: false, message: 'Email already in use' });
-      }
-      next(err);
-    }
-  }
-);
-
-router.post('/login', async (req, res, next) => {
-  try {
-    const email = normalizeEmail(req.body.email);
-    const { password } = req.body;
-    if (!email || !password) return res.status(400).json({ success: false, message: 'email and password are required' });
-
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    const ok = await bcrypt.compare(password, user.password);
-    if (!ok) return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    const token = signToken(user);
-    const payload = {
-      id: user.id, fullName: user.fullName, email: user.email,
-      role: user.role, isActive: user.isActive, permissions: user.permissions || {},
-    };
-
-    res.json({ success: true, data: { user: payload, token } });
-  } catch (err) {
-    next(err);
-  }
-});
 
 export default router;
