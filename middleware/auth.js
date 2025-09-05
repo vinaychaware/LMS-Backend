@@ -2,74 +2,79 @@
 import jwt from 'jsonwebtoken';
 import { prisma } from '../config/prisma.js';
 
-// ---- Protect (named export)
-export const protect = async (req, res, next) => {
+const norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+
+export async function protect(req, res, next) {
   try {
-    let token;
 
-    // Prefer Authorization header: Bearer <token>
-    if (req.headers.authorization?.startsWith('Bearer ')) {
-      token = req.headers.authorization.split(' ')[1];
+    const auth = req.headers.authorization || '';
+    if (!auth.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const token = auth.slice(7);
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // Optional cookie fallback (requires cookie-parser)
-    if (!token && req.cookies?.token) {
-      token = req.cookies.token;
+    const userId =
+      decoded.id ||
+      decoded.userId ||
+      decoded.uid ||
+      decoded.sub ||
+      null;
+
+    const userEmail = decoded.email || decoded.user?.email || null;
+
+    if (!userId && !userEmail) {
+  
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    if (!token) {
-      return res.status(401).json({ success: false, message: 'Not authorized: missing token' });
-    }
 
-    // ⚠️ Use the same secret fallback used when signing
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret');
+    const where = userId ? { id: String(userId) } : { email: String(userEmail) };
 
-    // Support multiple possible payload keys, but prefer `sub`
-    const userId = decoded.userId || decoded.id || decoded.sub;
-    if (!userId) {
-      return res.status(401).json({ success: false, message: 'Invalid token payload' });
-    }
 
     const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, fullName: true, email: true, role: true, isActive: true, isEmailVerified: true }
+      where,
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        isActive: true,
+        isEmailVerified: true,
+        permissions: true,
+      },
     });
 
-    if (!user) {
-      return res.status(401).json({ success: false, message: 'User not found' });
-    }
-    if (!user.isActive) {
-      return res.status(401).json({ success: false, message: 'User account is deactivated' });
+    if (!user || !user.isActive) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // Attach to request for downstream routes (e.g., requireSuperAdmin)
-    req.user = user;
+    // Normalize role once
+    req.user = { ...user, role: norm(user.role) };
     next();
   } catch (err) {
-    // Helpful diagnostics during dev
-    // console.error('protect error:', err);
-
-    // Differentiate common JWT errors (optional)
-    if (err.name === 'TokenExpiredError') {
-      return res.status(401).json({ success: false, message: 'Token expired' });
-    }
-    if (err.name === 'JsonWebTokenError') {
-      return res.status(401).json({ success: false, message: 'Invalid token' });
-    }
-    return res.status(401).json({ success: false, message: 'Not authorized to access this route' });
+    console.error('protect error:', err);
+    return res.status(401).json({ error: 'Unauthorized' });
   }
-};
+}
 
-// ---- Authorize (named export)
 export const authorize = (...roles) => {
+  // normalize input roles once
+  const allowed = roles.map(r => String(r || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_'));
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ success: false, message: 'Not authorized to access this route' });
     }
-    if (!roles.includes(req.user.role)) {
+    if (!allowed.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        message: `User role '${req.user.role}' is not authorized to access this route`
+        message: `User role '${req.user.role}' is not authorized to access this route`,
       });
     }
     next();

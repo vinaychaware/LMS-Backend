@@ -7,7 +7,7 @@ import morgan from 'morgan';
 
 import { testConnection } from './config/prisma.js';
 import { protect } from './middleware/auth.js';
-
+import uploadsRouter from './routes/upload.js';
 // Routers
 import authRouter from './routes/auth.js';
 import usersRouter from './routes/users.js';
@@ -17,9 +17,12 @@ import coursesRouter from './routes/courses.js';
 import chapterRouter from './routes/chapter.js';
 import enrollmentsRouter from './routes/enrollments.js';
 import assessmentsRouter from './routes/assessments.js'; 
+import path from 'path';
+import { fileURLToPath } from 'url';
 const app = express();
 
-
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 app.use(helmet());
 app.use(
   cors({
@@ -46,8 +49,8 @@ app.use('/api/users', usersRouter);
 app.use('/api/superadmin', protect, superAdminRouter);
 app.use('/api/admin', protect, adminRouter);
 app.use('/api/courses', protect, coursesRouter);
-
-
+app.use('/uploads', express.static(path.resolve('uploads')));
+app.use('/api', uploadsRouter);
 app.use('/api', protect, chapterRouter);
 app.use('/api', protect, enrollmentsRouter);
 app.use('/api/assessments', protect, assessmentsRouter);
