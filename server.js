@@ -29,11 +29,9 @@ const __dirname = path.dirname(__filename);
 
 // Security & essentials
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-app.use(cors({
-  // IMPORTANT: set CORS_ORIGIN in Vercel env like: https://your-frontend.vercel.app,http://localhost:5173
-  origin: (process.env.CORS_ORIGIN || '').split(',').filter(Boolean),
-  credentials: true
-}));
+const origins = (process.env.CORS_ORIGIN || '').split(',').filter(Boolean);
+app.use(cors({ origin: origins.length ? origins : true, credentials: true }));
+
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 if (process.env.NODE_ENV !== 'production') app.use(morgan('dev'));
@@ -59,44 +57,55 @@ app.use('/api/users', usersRouter);
 app.use('/api/superadmin', protect, superAdminRouter);
 app.use('/api/admin', protect, adminRouter);
 app.use('/api/courses', protect, coursesRouter);
-app.use('/uploads', express.static(path.resolve('uploads'))); // Ephemeral on Vercel; use S3/Cloudinary for real uploads
+app.use('/uploads', express.static(path.resolve('uploads'))); 
 app.use('/api', uploadsRouter);
 app.use('/api', protect, chapterRouter);
 app.use('/api', protect, enrollmentsRouter);
 app.use('/api/assessments', protect, assessmentsRouter);
 
-// 404
-app.use((req, res) => {
-  res.status(404).json({ success: false, message: 'Route not found' });
+
+app.get('/diag/env', (_req, res) => {
+  res.json({
+    node: process.version,
+    vercel: !!process.env.VERCEL,
+    hasDB: !!process.env.DATABASE_URL,
+    hasJWT: !!process.env.JWT_SECRET,
+    corsOrigin: process.env.CORS_ORIGIN || null
+  });
 });
 
-// Error handler
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(err.status || 500).json({ success: false, message: err.message || 'Internal Server Error' });
+app.get('/diag/db', async (_req, res, next) => {
+  try { await testConnection(); res.json({ db: 'ok' }); }
+  catch (e) { next(e); }
 });
 
-/**
- * Ensure DB connection once per cold start (safe for serverless).
- */
+
 let _ready = false;
 async function initOnce() {
   if (_ready) return;
   await testConnection();
   _ready = true;
 }
-// Run before handling any request
+
 app.use(async (_req, _res, next) => {
   try { await initOnce(); next(); } catch (e) { next(e); }
 });
 
-// ---- Export for Vercel & run locally ----
-const PORT = process.env.PORT || 4000;
 
-// Always export a handler for Vercel
+const PORT = process.env.PORT || 5000;
+
+
 export default serverless(app);
 
-// Only start a listener when running locally (not on Vercel)
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: 'Route not found' });
+});
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ success: false, message: err.message || 'Internal Server Error' });
+});
+
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`🚀 Server running locally on http://localhost:${PORT}`);
