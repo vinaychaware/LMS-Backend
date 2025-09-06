@@ -24,6 +24,26 @@ import assessmentsRouter from './routes/assessments.js';
 
 const app = express();
 
+const ALLOWED_ORIGINS = [
+  "http://localhost:5173",          // dev (Vite)
+  "http://localhost:3000",          // dev (Next)
+  "https://lms-vhfz.vercel.app",    // your prod frontend
+];
+
+app.use(cors({
+  origin: ALLOWED_ORIGINS,
+  credentials: false, // set true only if you actually use cookies
+  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"],
+  optionsSuccessStatus: 204,
+}));
+
+// Make sure OPTIONS always responds with CORS headers
+app.options("*", cors({
+  origin: ALLOWED_ORIGINS,
+  credentials: false,
+}));
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
