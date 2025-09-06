@@ -25,10 +25,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use(helmet());
 app.use(
-  cors({
-    origin: (process.env.CORS_ORIGIN || '*').split(','),
-    credentials: true,
-  })
+  cors({ origin: ['http://localhost:3000'], credentials: true })
+
 );
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -37,6 +35,17 @@ if (process.env.NODE_ENV !== 'production') app.use(morgan('dev'));
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || 'development' });
+});
+
+// turn off etags entirely (no 304)
+app.set('etag', false);
+
+// or set no-store headers
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
 });
 
 
@@ -69,7 +78,9 @@ app.use((err, _req, res, _next) => {
 });
 
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 5000;
+
+
 
 await testConnection(); 
 
