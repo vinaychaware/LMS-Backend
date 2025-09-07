@@ -99,7 +99,7 @@ app.use('/api/courses', protect, coursesRouter);
 app.use('/uploads', express.static(path.resolve('uploads'))); 
 app.use('/api', uploadsRouter);
 app.use('/api', protect, chapterRouter);
-app.use('/api', protect, enrollmentsRouter);
+app.use("/api", protect, enrollmentsRouter);
 app.use('/api/assessments', protect, assessmentsRouter);
 
 

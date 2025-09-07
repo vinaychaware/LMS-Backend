@@ -29,29 +29,118 @@ async function uniqueChapterSlug(tx, courseId, base, attempt = 0) {
   return uniqueChapterSlug(tx, courseId, baseSlug, attempt + 1);
 }
 
-// ---------- basic course routes (kept) ----------
 
-// List all courses (admins/SA)
-router.get("/", async (_req, res) => {
-  const rows = await prisma.course.findMany({
-    include: {
-      enrollments: true,
-      instructors: { include: { instructor: { select: { fullName: true } } } },
-    },
-  });
-  res.json(
-    rows.map((c) => ({
-      id: c.id,
-      title: c.title,
-      thumbnail: c.thumbnail,
-      status: c.status,
-      studentCount: c.enrollments.length,
-      instructorNames: c.instructors.map((i) => i.instructor.fullName),
-    })),
-  );
+
+
+// router.get("/", async (_req, res) => {
+//   const rows = await prisma.course.findMany({
+//     include: {
+//       enrollments: true,
+//       instructors: { include: { instructor: { select: { fullName: true } } } },
+//     },
+//   });
+//   res.json(
+//     rows.map((c) => ({
+//       id: c.id,
+//       title: c.title,
+//       thumbnail: c.thumbnail,
+//       status: c.status,
+//       studentCount: c.enrollments.length,
+//       instructorNames: c.instructors.map((i) => i.instructor.fullName),
+//     })),
+//   );
+// });
+
+// List courses (backwards-compatible for Super Admin) + optional filters:
+//   ?instructorId=<id>   -> courses taught by instructor
+//   ?studentId=<id>      -> courses where student is enrolled
+//   ?ids=c1,c2,c3        -> only these ids
+router.get("/", async (req, res) => {
+  const { instructorId, studentId, ids } = req.query || {};
+
+  // base where
+  const where = {};
+
+  // filter by explicit ids, if provided
+  if (ids) {
+    const list = String(ids)
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (list.length) where.id = { in: list };
+  }
+
+  // filter by instructor via join table (courseInstructor)
+  if (instructorId) {
+    where.instructors = { some: { instructorId: String(instructorId) } };
+  }
+
+  try {
+    let courses;
+
+    if (studentId) {
+      // limit to courses the student is enrolled in, then intersect other filters
+      const enrolls = await prisma.enrollment.findMany({
+        where: { studentId: String(studentId) },
+        select: { courseId: true },
+      });
+      const courseIds = enrolls.map((e) => e.courseId);
+      if (!courseIds.length) return res.json([]);
+
+      const whereWithStudent = {
+        ...where,
+        id: where.id
+          ? { in: courseIds.filter((id) => where.id.in?.includes(id)) }
+          : { in: courseIds },
+      };
+
+      courses = await prisma.course.findMany({
+        where: whereWithStudent,
+        include: {
+          enrollments: true,
+          instructors: { include: { instructor: { select: { fullName: true } } } },
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+    } else {
+      // default (Super Admin view) or instructorId/ids filtering only
+      courses = await prisma.course.findMany({
+        where,
+        include: {
+          enrollments: true,
+          instructors: { include: { instructor: { select: { fullName: true } } } },
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+    }
+
+    // ⬇︎ Keep the exact fields Super Admin already uses
+    res.json(
+      courses.map((c) => ({
+        id: c.id,
+        title: c.title,
+        thumbnail: c.thumbnail,
+        status: c.status,
+        studentCount: c.enrollments.length,
+        instructorNames: c.instructors.map((i) => i.instructor.fullName),
+
+        // (extra fields below are additive/safe if other pages want them)
+        // category: c.category || "—",
+        // level: c.level || "—",
+        // estimatedDuration: c.estimatedDuration || "—",
+        // updatedAt: c.updatedAt,
+        // totalModules: c.totalModules ?? 0,
+        // totalChapters: c.totalChapters ?? 0,
+      })),
+    );
+  } catch (e) {
+    console.error("GET /api/courses error:", e);
+    res.status(500).json({ error: "Internal error" });
+  }
 });
 
-// Create (admin/SA or permitted instructor)
+
+
 router.post("/", requireAdminOrAllowedInstructor, async (req, res) => {
   const { title, thumbnail, status = "draft", managerId } = req.body || {};
   const creatorId = req.user.id;
