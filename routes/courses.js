@@ -56,10 +56,18 @@ async function uniqueChapterSlug(tx, courseId, base, attempt = 0) {
 //   ?studentId=<id>      -> courses where student is enrolled
 //   ?ids=c1,c2,c3        -> only these ids
 router.get("/", async (req, res) => {
-  const { instructorId, studentId, ids } = req.query || {};
+  const { instructorId, studentId, ids, status } = req.query || {};
 
   // base where
   const where = {};
+
+  // optional status filter ('draft' | 'published')
+  if (status) {
+    const s = String(status).toLowerCase();
+    if (s === "draft" || s === "published") {
+      where.status = s;
+    }
+  }
 
   // filter by explicit ids, if provided
   if (ids) {
@@ -103,7 +111,7 @@ router.get("/", async (req, res) => {
         orderBy: { updatedAt: "desc" },
       });
     } else {
-      // default (Super Admin view) or instructorId/ids filtering only
+      // default (Super Admin view) or instructorId/ids/status filtering only
       courses = await prisma.course.findMany({
         where,
         include: {
@@ -114,7 +122,7 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // ⬇︎ Keep the exact fields Super Admin already uses
+    // Keep the exact fields your UI expects
     res.json(
       courses.map((c) => ({
         id: c.id,
@@ -123,15 +131,7 @@ router.get("/", async (req, res) => {
         status: c.status,
         studentCount: c.enrollments.length,
         instructorNames: c.instructors.map((i) => i.instructor.fullName),
-
-        // (extra fields below are additive/safe if other pages want them)
-        // category: c.category || "—",
-        // level: c.level || "—",
-        // estimatedDuration: c.estimatedDuration || "—",
-        // updatedAt: c.updatedAt,
-        // totalModules: c.totalModules ?? 0,
-        // totalChapters: c.totalChapters ?? 0,
-      })),
+      }))
     );
   } catch (e) {
     console.error("GET /api/courses error:", e);
@@ -142,15 +142,31 @@ router.get("/", async (req, res) => {
 
 
 router.post("/", requireAdminOrAllowedInstructor, async (req, res) => {
-  const { title, thumbnail, status = "draft", managerId } = req.body || {};
-  const creatorId = req.user.id;
-  if (!title) return res.status(400).json({ error: "title required" });
+  try {
+    const { title, thumbnail, status = "draft", managerId, category, description } = req.body || {};
+    if (!title?.trim()) return res.status(400).json({ error: "title required" });
 
-  const created = await prisma.course.create({
-    data: { title, thumbnail, status, creatorId, managerId },
-  });
-  res.json({ id: created.id });
+    const created = await prisma.course.create({
+      data: {
+        title: title.trim(),
+        thumbnail: thumbnail || null,
+        status,
+        creatorId: req.user.id,
+        managerId: managerId || null,
+        category: category ?? null,
+        description: description ?? null,
+      },
+      select: { id: true },
+    });
+
+    return res.status(201).json(created);
+  } catch (e) {
+    console.error("POST /api/courses error:", e);
+    return res.status(500).json({ error: "Internal error creating course" });
+  }
 });
+
+
 
 // Update course (admin/SA)
 router.patch("/:id", async (req, res) => {
