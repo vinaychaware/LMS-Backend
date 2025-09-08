@@ -31,115 +31,170 @@ async function uniqueChapterSlug(tx, courseId, base, attempt = 0) {
 
 
 
+  router.get("/", async (req, res) => {
+    const { instructorId, studentId, ids, status } = req.query || {};
 
-// router.get("/", async (_req, res) => {
-//   const rows = await prisma.course.findMany({
-//     include: {
-//       enrollments: true,
-//       instructors: { include: { instructor: { select: { fullName: true } } } },
-//     },
-//   });
-//   res.json(
-//     rows.map((c) => ({
-//       id: c.id,
-//       title: c.title,
-//       thumbnail: c.thumbnail,
-//       status: c.status,
-//       studentCount: c.enrollments.length,
-//       instructorNames: c.instructors.map((i) => i.instructor.fullName),
-//     })),
-//   );
+    // base where
+    const where = {};
+
+    // optional status filter ('draft' | 'published')
+    if (status) {
+      const s = String(status).toLowerCase();
+      if (s === "draft" || s === "published") {
+        where.status = s;
+      }
+    }
+
+    // filter by explicit ids, if provided
+    if (ids) {
+      const list = String(ids)
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (list.length) where.id = { in: list };
+    }
+
+    // filter by instructor via join table (courseInstructor)
+    if (instructorId) {
+      where.instructors = { some: { instructorId: String(instructorId) } };
+    }
+
+    try {
+      let courses;
+
+      if (studentId) {
+        // limit to courses the student is enrolled in, then intersect other filters
+        const enrolls = await prisma.enrollment.findMany({
+          where: { studentId: String(studentId) },
+          select: { courseId: true },
+        });
+        const courseIds = enrolls.map((e) => e.courseId);
+        if (!courseIds.length) return res.json([]);
+
+        const whereWithStudent = {
+          ...where,
+          id: where.id
+            ? { in: courseIds.filter((id) => where.id.in?.includes(id)) }
+            : { in: courseIds },
+        };
+
+        courses = await prisma.course.findMany({
+          where: whereWithStudent,
+          include: {
+            enrollments: true,
+            instructors: { include: { instructor: { select: { fullName: true } } } },
+          },
+          orderBy: { updatedAt: "desc" },
+        });
+      } else {
+        // default (Super Admin view) or instructorId/ids/status filtering only
+        courses = await prisma.course.findMany({
+          where,
+          include: {
+            enrollments: true,
+            instructors: { include: { instructor: { select: { fullName: true } } } },
+          },
+          orderBy: { updatedAt: "desc" },
+        });
+      }
+
+      // Keep the exact fields your UI expects
+      res.json(
+        courses.map((c) => ({
+          id: c.id,
+          title: c.title,
+          thumbnail: c.thumbnail,
+          status: c.status,
+          studentCount: c.enrollments.length,
+          instructorNames: c.instructors.map((i) => i.instructor.fullName),
+        }))
+      );
+    } catch (e) {
+      console.error("GET /api/courses error:", e);
+      res.status(500).json({ error: "Internal error" });
+    }
+  });
+
+
+
+// router.get("/", async (req, res) => {
+//   try {
+//     const { instructorId, studentId, ids, status } = req.query || {};
+//     const where = {};
+
+//     if (status) {
+//       const s = String(status).toLowerCase();
+//       if (s === "draft" || s === "published") {
+//         where.status = s;
+//       }
+//     }
+
+//     if (ids) {
+//       const list = String(ids).split(",").map((x) => x.trim()).filter(Boolean);
+//       if (list.length) where.id = { in: list };
+//     }
+
+//     if (instructorId) {
+//       where.instructors = { some: { instructorId: String(instructorId) } };
+//     }
+
+    
+//     let courses;
+//     if (studentId) {
+//       const enrolls = await prisma.enrollment.findMany({
+//         where: { studentId: String(studentId) },
+//         select: { courseId: true },
+//       });
+//       const courseIds = enrolls.map((e) => e.courseId);
+//       if (!courseIds.length) {
+      
+        
+//         return res.json({ courses: [], instructors: [] });
+//       }
+//       const whereWithStudent = {
+//         ...where,
+//         id: where.id
+//           ? { in: courseIds.filter((id) => where.id.in?.includes(id)) }
+//           : { in: courseIds },
+//       };
+//       courses = await prisma.course.findMany({ where: whereWithStudent, 
+        
+//       });
+//     } else {
+//       courses = await prisma.course.findMany({ where, 
+        
+//       });
+//     }
+
+  
+//     let instructors = [];
+
+//     if (req.user && (req.user.role === 'ADMIN' || req.user.role === 'SUPER_ADMIN')) {
+//       instructors = await prisma.user.findMany({
+//         where: { role: 'INSTRUCTOR' },
+//         select: { id: true, fullName: true },
+//         orderBy: { fullName: 'asc' },
+//       });
+//     }
+    
+
+//     res.json({
+//       courses: courses.map((c) => ({
+//         id: c.id,
+//         title: c.title,
+//         thumbnail: c.thumbnail,
+//         status: c.status,
+//         studentCount: c.enrollments.length,
+//         instructorNames: c.instructors.map((i) => i.instructor.fullName),
+//       })),
+//       instructors: instructors, 
+//     });
+
+//   } catch (e) {
+//     console.error("GET /api/courses error:", e);
+//     res.status(500).json({ error: "Internal error" });
+//   }
 // });
-
-// List courses (backwards-compatible for Super Admin) + optional filters:
-//   ?instructorId=<id>   -> courses taught by instructor
-//   ?studentId=<id>      -> courses where student is enrolled
-//   ?ids=c1,c2,c3        -> only these ids
-router.get("/", async (req, res) => {
-  const { instructorId, studentId, ids, status } = req.query || {};
-
-  // base where
-  const where = {};
-
-  // optional status filter ('draft' | 'published')
-  if (status) {
-    const s = String(status).toLowerCase();
-    if (s === "draft" || s === "published") {
-      where.status = s;
-    }
-  }
-
-  // filter by explicit ids, if provided
-  if (ids) {
-    const list = String(ids)
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-    if (list.length) where.id = { in: list };
-  }
-
-  // filter by instructor via join table (courseInstructor)
-  if (instructorId) {
-    where.instructors = { some: { instructorId: String(instructorId) } };
-  }
-
-  try {
-    let courses;
-
-    if (studentId) {
-      // limit to courses the student is enrolled in, then intersect other filters
-      const enrolls = await prisma.enrollment.findMany({
-        where: { studentId: String(studentId) },
-        select: { courseId: true },
-      });
-      const courseIds = enrolls.map((e) => e.courseId);
-      if (!courseIds.length) return res.json([]);
-
-      const whereWithStudent = {
-        ...where,
-        id: where.id
-          ? { in: courseIds.filter((id) => where.id.in?.includes(id)) }
-          : { in: courseIds },
-      };
-
-      courses = await prisma.course.findMany({
-        where: whereWithStudent,
-        include: {
-          enrollments: true,
-          instructors: { include: { instructor: { select: { fullName: true } } } },
-        },
-        orderBy: { updatedAt: "desc" },
-      });
-    } else {
-      // default (Super Admin view) or instructorId/ids/status filtering only
-      courses = await prisma.course.findMany({
-        where,
-        include: {
-          enrollments: true,
-          instructors: { include: { instructor: { select: { fullName: true } } } },
-        },
-        orderBy: { updatedAt: "desc" },
-      });
-    }
-
-    // Keep the exact fields your UI expects
-    res.json(
-      courses.map((c) => ({
-        id: c.id,
-        title: c.title,
-        thumbnail: c.thumbnail,
-        status: c.status,
-        studentCount: c.enrollments.length,
-        instructorNames: c.instructors.map((i) => i.instructor.fullName),
-      }))
-    );
-  } catch (e) {
-    console.error("GET /api/courses error:", e);
-    res.status(500).json({ error: "Internal error" });
-  }
-});
-
-
 
 router.post("/", requireAdminOrAllowedInstructor, async (req, res) => {
   try {

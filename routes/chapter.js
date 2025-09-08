@@ -20,7 +20,7 @@ router.get("/chapters", async (req, res) => {
   if (!courseId) return res.status(400).json({ error: "courseId required" });
 
   const chapters = await prisma.chapter.findMany({
-    where: { courseId: String(courseId), isPublished: true },
+    where: { courseId: String(courseId)},
     orderBy: { order: "asc" },
     include: { assessments: { select: { id: true } } },
   });
