@@ -62,7 +62,7 @@ model CourseInstructor {
   id           String @id @default(uuid())
   courseId     String
   instructorId String
-  course       Course @relation(fields: [courseId], references: [id])
+  course     Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
   instructor   User   @relation(fields: [instructorId], references: [id])
 
   @@unique([courseId, instructorId])
@@ -70,22 +70,26 @@ model CourseInstructor {
 }
 
 model Enrollment {
-  id        String @id @default(uuid())
-  courseId  String
-  studentId String
-  status    String @default("active")
-  progress  Int    @default(0)
-  course    Course @relation(fields: [courseId], references: [id])
-  student   User   @relation(fields: [studentId], references: [id])
+  id         String   @id @default(uuid())
+  studentId  String
+  courseId   String
+  status     String   @default("PENDING")
+  progress   Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  @@unique([courseId, studentId])
+  student    User     @relation(fields: [studentId], references: [id])
+  course     Course   @relation(fields: [courseId], references: [id])
+
+  @@unique([studentId, courseId]) 
+  @@index([courseId])
   @@index([studentId])
 }
 
 model Chapter {
   id          String            @id @default(uuid())
   title       String            @db.VarChar(200)
-  slug        String            @db.VarChar(250)
+  slug        String   @db.VarChar(250) @default(cuid())
   description String?
   content     String?
   attachments String[]

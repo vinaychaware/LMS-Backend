@@ -1,11 +1,89 @@
-// routes/assessments.js
 import express from 'express';
 import { prisma } from '../config/prisma.js';
-
+import { protect, authorize } from '../middleware/auth.js';
 const router = express.Router();
 
 const up = (s) => String(s || '').toUpperCase();
-const isAdmin = (req) => ['ADMIN', 'SUPER_ADMIN'].includes(up(req.user?.role));
+const isAdmin = (req) => ['ADMIN', 'SUPERADMIN', 'SUPER_ADMIN'].includes(up(req.user?.role));
+
+
+
+router.post(
+  '/chapters/:chapterId',
+  authorize('ADMIN','SUPERADMIN','INSTRUCTOR','SUPER_ADMIN'),
+  async (req, res) => {
+    try {
+      const { chapterId } = req.params;
+      const {
+        title,
+        type = 'quiz',
+        scope = 'chapter',
+        timeLimitSeconds = null,
+        maxAttempts = 1,
+        isPublished = true,
+        order = 1,
+        questions = [],              
+      } = req.body;
+
+    
+      const chapter = await prisma.chapter.findUnique({
+        where: { id: String(chapterId) },
+        select: { id: true, courseId: true },
+      });
+      if (!chapter) return res.status(404).json({ error: 'Chapter not found' });
+
+      // 2) create assessment
+      const assessment = await prisma.assessment.create({
+        data: {
+          title: String(title || 'Untitled Assessment'),
+          type, scope,
+          timeLimitSeconds,
+          maxAttempts,
+          isPublished,
+          order,
+          chapterId: chapter.id,
+          courseId: chapter.courseId,
+        },
+        select: { id: true },
+      });
+
+      // 3) create questions if provided
+      if (Array.isArray(questions) && questions.length) {
+        const qData = questions.map((q, i) => ({
+          assessmentId: assessment.id,
+          prompt: String(q.prompt || ''),
+          type: String(q.type || ''),                   // your UI sends: single/multiple/numerical/match/subjective
+          options: Array.isArray(q.options) ? q.options.map(String) : [],
+          correctOptionIndex:
+            Number.isFinite(q.correctOptionIndex) ? q.correctOptionIndex : null,
+          correctOptionIndexes:
+            Array.isArray(q.correctOptionIndexes)
+              ? q.correctOptionIndexes.map(Number)
+              : [],
+          correctText: q.correctText ?? null,
+          pairs: q.pairs ?? null,                       // JSON field (for match)
+          sampleAnswer: q.sampleAnswer ?? null,         // subjective
+          points: Number.isFinite(q.points) ? q.points : 1,
+          order: Number.isFinite(q.order) ? q.order : i + 1,
+        }));
+
+        await prisma.assessmentQuestion.createMany({ data: qData });
+      }
+
+      // 4) return assessment with questions
+      const full = await prisma.assessment.findUnique({
+        where: { id: assessment.id },
+        include: { questions: { orderBy: [{ order: 'asc' }, { id: 'asc' }] } },
+      });
+
+      return res.status(201).json(full);
+    } catch (e) {
+      console.error('POST /api/assessments/chapters/:chapterId error:', e);
+      return res.status(500).json({ error: 'Internal error' });
+    }
+  }
+);
+
 
 
 router.get('/', async (req, res) => {
