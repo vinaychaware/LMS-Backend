@@ -202,6 +202,7 @@ router.post("/:id/instructors", async (req, res) => {
   res.json({ ok: true, count: instructorIds.length });
 });
 
+
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -210,19 +211,34 @@ router.get("/:id", async (req, res) => {
       include: {
         enrollments: true,
         instructors: {
-          include: { instructor: { select: { fullName: true } } },
+          include: { instructor: { select: { id: true, fullName: true, email: true } } },
         },
+        
       },
     });
     if (!c) return res.status(404).json({ error: "Not found" });
+
     res.json({
+ 
       id: c.id,
       title: c.title,
       thumbnail: c.thumbnail,
       status: c.status,
       studentCount: c.enrollments.length,
-      instructorNames: c.instructors.map((i) => i.instructor.fullName),
       createdAt: c.createdAt,
+
+  
+      category: c.category ?? "",
+      description: c.description ?? "",
+
+      instructors: c.instructors.map((ci) => ({
+        instructorId: ci.instructorId,               
+        fullName: ci.instructor.fullName,
+        email: ci.instructor.email,
+      })),
+
+      // you can still keep a friendly names list if you want
+      instructorNames: c.instructors.map((i) => i.instructor.fullName),
     });
   } catch (e) {
     console.error("GET /api/courses/:id error:", e);

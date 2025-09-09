@@ -7,7 +7,6 @@ const up = (s) => String(s || '').toUpperCase();
 const isAdmin = (req) => ['ADMIN', 'SUPERADMIN', 'SUPER_ADMIN'].includes(up(req.user?.role));
 
 
-
 router.post(
   '/chapters/:chapterId',
   authorize('ADMIN','SUPERADMIN','INSTRUCTOR','SUPER_ADMIN'),
@@ -83,8 +82,6 @@ router.post(
     }
   }
 );
-
-
 
 router.get('/', async (req, res) => {
   try {
@@ -213,5 +210,127 @@ router.post('/:id/attempts', async (req, res) => {
     res.status(500).json({ error: 'Internal error' });
   }
 });
+
+// GET /api/progress/dashboard
+router.get("/dashboard", protect, async (req, res) => {
+  try {
+    const studentId = req.user.id;
+
+    // total courses enrolled
+    const totalCourses = await prisma.enrollment.count({
+      where: { studentId },
+    });
+
+    // completed chapters
+    const completedChapters = await prisma.chapterProgress.count({
+      where: { studentId },
+    });
+
+    // test average (latest attempt per assessment)
+    const attempts = await prisma.assessmentAttempt.findMany({
+      where: { studentId, status: "submitted" },
+      orderBy: { submittedAt: "desc" },
+      select: { assessmentId: true, score: true, maxScore: true },
+    });
+    const seen = new Set();
+    let percentSum = 0, count = 0;
+    for (const a of attempts) {
+      if (seen.has(a.assessmentId)) continue;
+      seen.add(a.assessmentId);
+      if (a.maxScore > 0) {
+        percentSum += (a.score / a.maxScore) * 100;
+        count++;
+      }
+    }
+    const averageTestScore = count ? Math.round(percentSum / count) : 0;
+
+    // total time spent (sum of quiz durations + maybe track chapter open time)
+    const totalTimeSpent = await prisma.chapterProgress.aggregate({
+      where: { studentId },
+      _sum: { timeSpentSeconds: true }, // add this field to ChapterProgress if you want
+    });
+
+    // certificates earned (assuming you have a Certificate model)
+    const certificatesEarned = await prisma.certificate.count({
+      where: { studentId },
+    });
+
+    res.json({
+      data: {
+        totalCourses,
+        completedChapters,
+        averageTestScore,
+        totalTimeSpent: totalTimeSpent._sum.timeSpentSeconds || 0,
+        certificatesEarned,
+      },
+    });
+  } catch (e) {
+    console.error("dashboard stats error:", e);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
+
+router.put('/:id',
+  protect,
+  authorize('ADMIN','SUPERADMIN','INSTRUCTOR','SUPER_ADMIN'),
+  async (req, res) => {
+    try {
+      const id = String(req.params.id);
+      const {
+        title,
+        type = 'quiz',
+        scope = 'chapter',
+        timeLimitSeconds = null,
+        maxAttempts = 1,
+        isPublished = true,
+        order = 1,
+        questions = [],
+      } = req.body;
+
+      const existing = await prisma.assessment.findUnique({
+        where: { id },
+        select: { id: true }
+      });
+      if (!existing) return res.status(404).json({ error: 'Not found' });
+
+      await prisma.assessment.update({
+        where: { id },
+        data: { title, type, scope, timeLimitSeconds, maxAttempts, isPublished, order }
+      });
+
+      // Replace questions (simplest approach)
+      await prisma.assessmentQuestion.deleteMany({ where: { assessmentId: id } });
+
+      if (Array.isArray(questions) && questions.length) {
+        const qData = questions.map((q, i) => ({
+          assessmentId: id,
+          prompt: String(q.prompt || ''),
+          type: String(q.type || ''),
+          options: Array.isArray(q.options) ? q.options.map(String) : [],
+          correctOptionIndex: Number.isFinite(q.correctOptionIndex) ? q.correctOptionIndex : null,
+          correctOptionIndexes: Array.isArray(q.correctOptionIndexes) ? q.correctOptionIndexes.map(Number) : [],
+          correctText: q.correctText ?? null,
+          pairs: q.pairs ?? null,
+          sampleAnswer: q.sampleAnswer ?? null,
+          points: Number.isFinite(q.points) ? q.points : 1,
+          order: Number.isFinite(q.order) ? q.order : i + 1,
+        }));
+        await prisma.assessmentQuestion.createMany({ data: qData });
+      }
+
+      const full = await prisma.assessment.findUnique({
+        where: { id },
+        include: { questions: { orderBy: [{ order: 'asc' }, { id: 'asc' }] } },
+      });
+
+      res.json(full);
+    } catch (e) {
+      console.error('PUT /assessments/:id error:', e);
+      res.status(500).json({ error: 'Internal error' });
+    }
+  }
+);
+
 
 export default router;

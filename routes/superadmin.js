@@ -225,27 +225,6 @@ router.delete("/users/:id", requireSuperAdmin, async (req, res) => {
 });
 
 
-// router.get("/courses", requireSuperAdmin, async (_req, res) => {
-//   const rows = await prisma.course.findMany({
-//     include: {
-//       instructors: { include: { instructor: { select: { id: true, fullName: true } } } },
-//       enrollments: { select: { id: true } },
-//       creator: { select: { id: true, fullName: true, role: true } },
-//       manager: { select: { id: true, fullName: true, role: true } },
-//     },
-//   });
-
-//   const data = rows.map((c) => ({
-//     ...toCoursePayload(c),
-//     instructorNames: c.instructors.map((i) => i.instructor.fullName),
-//     studentCount: c.enrollments.length,
-//     creatorName: c.creator?.fullName ?? null,
-//     managerName: c.manager?.fullName ?? null,
-//   }));
-
-//   res.json(data);
-// });
-// src/routes/superadmin.js
 router.get("/courses", requireSuperAdmin, async (_req, res) => {
   const rows = await prisma.course.findMany({
     select: {

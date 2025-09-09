@@ -54,12 +54,22 @@ router.post("/courses/:courseId/chapters", requireAdmin, async (req, res) => {
 });
 
 router.patch("/chapters/:id", requireAdmin, async (req, res) => {
+  const { title, content, attachments, order, isPublished } = req.body;
+
   const updated = await prisma.chapter.update({
     where: { id: String(req.params.id) },
-    data: req.body,
+    data: {
+      ...(title !== undefined ? { title } : {}),
+      ...(content !== undefined ? { content } : {}),
+      ...(attachments !== undefined ? { attachments } : {}), // overwrites array
+      ...(order !== undefined ? { order } : {}),
+      ...(isPublished !== undefined ? { isPublished } : {}),
+    },
   });
-  res.json({ id: updated.id });
+
+  res.json({ data: updated });
 });
+
 
 router.delete("/chapters/:id", requireAdmin, async (req, res) => {
   const { id } = req.params;
