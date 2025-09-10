@@ -26,6 +26,7 @@ import coursesRouter from './routes/courses.js';
 import chapterRouter from './routes/chapter.js';
 import enrollmentsRouter from './routes/enrollments.js';
 import assessmentsRouter from './routes/assessments.js';
+import progressRoutes from "./routes/progress.js";
 
 const app = express();
 
@@ -106,7 +107,7 @@ app.use('/api/uploads', uploadsRouter);
 app.use('/api', protect, chapterRouter);
 app.use("/api", protect, enrollmentsRouter);
 app.use('/api/assessments', protect, assessmentsRouter);
-
+app.use("/api/progress", progressRoutes);
 
 app.get('/diag/env', (_req, res) => {
   res.json({

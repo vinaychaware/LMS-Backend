@@ -1,6 +1,6 @@
 // config/prisma.js  (ESM)
 import { PrismaClient } from '@prisma/client';
-
+import { slugify } from "../utils/slugify.js";
 const isDev = process.env.NODE_ENV === 'development';
 
 // Reuse a single Prisma instance across hot-reloads
@@ -59,4 +59,35 @@ const installShutdownHooks = () => {
 };
 installShutdownHooks();
 
+
+async function uniqueChapterSlug(title, courseId) {
+  const base = slugify(title) || "chapter";
+  let slug = base;
+  let i = 1;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const exists = await prisma.chapter.findFirst({
+      where: { courseId, slug },
+      select: { id: true },
+    });
+    if (!exists) return slug;
+    slug = `${base}-${++i}`;
+    if (i > 500) throw new Error("Could not generate a unique slug");
+  }
+}
+
+prisma.$use(async (params, next) => {
+  if (params.model === "Chapter" && params.action === "create") {
+    const data = params.args.data || {};
+    if (!data.slug) {
+      if (!data.title || !data.courseId) {
+        throw new Error("title and courseId are required to auto-generate slug");
+      }
+      data.slug = await uniqueChapterSlug(data.title, data.courseId);
+      params.args.data = data;
+    }
+  }
+  return next(params);
+});
 export { prisma };
