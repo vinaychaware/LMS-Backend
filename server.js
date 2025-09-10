@@ -1,5 +1,10 @@
 // server.js
 import 'dotenv/config.js';
+// --- Startup Environment Checks ---
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL is not set in your environment. Please check your .env file.');
+  process.exit(1);
+}
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -133,6 +138,20 @@ app.use(async (_req, _res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
+// Only run DB check and listen if not on Vercel (local/server mode)
+if (!process.env.VERCEL) {
+  // Test DB connection at startup
+  testConnection()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`🚀 Server running locally on http://localhost:${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error('❌ Failed to connect to the database at startup:', err.message || err);
+      process.exit(1);
+    });
+}
 
 export default serverless(app);
 
@@ -144,9 +163,3 @@ app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(err.status || 500).json({ success: false, message: err.message || 'Internal Server Error' });
 });
-
-if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running locally on http://localhost:${PORT}`);
-  });
-}
