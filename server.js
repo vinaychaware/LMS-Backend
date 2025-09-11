@@ -1,5 +1,3 @@
-// server.js
-
 import "dotenv/config.js";
 import express from "express";
 import cors from "cors";
@@ -8,29 +6,10 @@ import morgan from "morgan";
 import path from "path";
 import { fileURLToPath } from "url";
 import serverless from "serverless-http";
-
-import 'dotenv/config.js';
-// --- Startup Environment Checks ---
-if (!process.env.DATABASE_URL) {
-  console.error('❌ DATABASE_URL is not set in your environment. Please check your .env file.');
-  process.exit(1);
-}
-import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import morgan from 'morgan';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import serverless from 'serverless-http';
-
-
+import "dotenv/config.js";
 import { testConnection } from "./config/prisma.js";
-
 import debugEmail from "./routes/debug-email.js";
-
 import { protect } from "./middleware/auth.js";
-
-// Routers
 import uploadsRouter from "./routes/upload.js";
 import authRouter from "./routes/auth.js";
 import usersRouter from "./routes/users.js";
@@ -42,6 +21,13 @@ import enrollmentsRouter from "./routes/enrollments.js";
 import assessmentsRouter from "./routes/assessments.js";
 import progressRoutes from "./routes/progress.js";
 
+
+if (!process.env.DATABASE_URL) {
+  console.error(
+    "❌ DATABASE_URL is not set in your environment. Please check your .env file."
+  );
+  process.exit(1);
+}
 const app = express();
 app.use("/debug", debugEmail);
 const ALLOWED_ORIGINS = [
@@ -166,7 +152,6 @@ app.use(async (_req, _res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-
 // Only run DB check and listen if not on Vercel (local/server mode)
 if (!process.env.VERCEL) {
   // Test DB connection at startup
@@ -177,11 +162,13 @@ if (!process.env.VERCEL) {
       });
     })
     .catch((err) => {
-      console.error('❌ Failed to connect to the database at startup:', err.message || err);
+      console.error(
+        "❌ Failed to connect to the database at startup:",
+        err.message || err
+      );
       process.exit(1);
     });
 }
-
 
 export default serverless(app);
 
