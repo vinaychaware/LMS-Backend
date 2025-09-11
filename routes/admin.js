@@ -5,6 +5,7 @@ const router = express.Router();
 
 const up = (s) => String(s || "").toUpperCase();
 
+// This middleware is correct, no changes needed.
 function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
   const r = up(req.user.role);
@@ -14,6 +15,7 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// This helper function is correct, no changes needed.
 async function getAdminCourseIds(adminId) {
   const cs = await prisma.course.findMany({
     where: { OR: [{ creatorId: adminId }, { managerId: adminId }] },
@@ -22,6 +24,7 @@ async function getAdminCourseIds(adminId) {
   return cs.map((c) => c.id);
 }
 
+// This route is correct, no changes needed.
 router.get("/overview", requireAdmin, async (req, res, next) => {
   try {
     const adminId = req.user.id;
@@ -63,8 +66,7 @@ router.get("/overview", requireAdmin, async (req, res, next) => {
   }
 });
 
-
-// GET /api/admin/courses
+// This route is correct, no changes needed.
 router.get("/courses", requireAdmin, async (req, res, next) => {
   try {
     const adminId = req.user.id;
@@ -76,17 +78,14 @@ router.get("/courses", requireAdmin, async (req, res, next) => {
         title: true,
         description: true,
         thumbnail: true,
-        status: true,                 // keep only fields that actually exist
-        enrollments: { select: { id: true } }, // for studentCount
+        status: true,
+        enrollments: { select: { id: true } },
         instructors: {
           select: {
-            instructor: { select: { fullName: true } },
+            instructor: { select: { id: true, fullName: true } },
           },
         },
       },
-      // If your schema doesn't have createdAt, remove orderBy or switch to a field that exists.
-      // orderBy: { createdAt: "desc" },
-      // Safer default (works in almost all schemas):
       orderBy: { id: "desc" },
     });
 
@@ -96,14 +95,12 @@ router.get("/courses", requireAdmin, async (req, res, next) => {
       description: c.description || "",
       thumbnail: c.thumbnail || null,
       status: c.status || "draft",
-
-      // Frontend compatibility: provide defaults even if DB has no columns for these:
       level: null,
-      totalModules: 0,
-      totalChapters: 0,
-
+      totalModules: 0, // Placeholder
+      totalChapters: 0, // Placeholder
       studentCount: c.enrollments.length,
       instructorNames: c.instructors.map((i) => i.instructor.fullName),
+      instructorIds: c.instructors.map((i) => i.instructor.id), // Added for consistency
     }));
 
     res.json(mapped);
@@ -113,34 +110,20 @@ router.get("/courses", requireAdmin, async (req, res, next) => {
 });
 
 
+// --- UPDATED: Students Route ---
+// Removed the `fallback` logic to ensure admins only ever see students
+// enrolled in their own courses.
 router.get("/students", requireAdmin, async (req, res, next) => {
   try {
     const adminId = req.user.id;
-    const wantFallbackAll = String(req.query.fallback || "").toLowerCase() === "all";
+    const courseIds = await getAdminCourseIds(adminId);
 
-    // Courses this admin owns/manages
-    const myCourses = await prisma.course.findMany({
-      where: { OR: [{ creatorId: adminId }, { managerId: adminId }] },
-      select: { id: true },
-    });
-    const courseIds = myCourses.map(c => c.id);
-
+    // If the admin manages no courses, they have no students.
     if (courseIds.length === 0) {
-      if (!wantFallbackAll) return res.json([]); // no courses, scoped = empty
-
-      // fallback: all students
-      const allStudents = await prisma.user.findMany({
-        where: { role: "STUDENT" },
-        select: { id: true, fullName: true, email: true, isActive: true, lastLogin: true },
-        orderBy: { id: "desc" },
-      });
-      return res.json(allStudents.map(s => ({
-        ...s,
-        assignedCourses: [], // none within this admin's scope
-      })));
+      return res.json([]);
     }
 
-    // scoped: students enrolled in the admin's courses
+    // Get all enrollments for the admin's courses
     const enrollments = await prisma.enrollment.findMany({
       where: { courseId: { in: courseIds } },
       select: {
@@ -151,62 +134,45 @@ router.get("/students", requireAdmin, async (req, res, next) => {
       },
     });
 
-    if (enrollments.length === 0 && wantFallbackAll) {
-      const allStudents = await prisma.user.findMany({
-        where: { role: "STUDENT" },
-        select: { id: true, fullName: true, email: true, isActive: true, lastLogin: true },
-        orderBy: { id: "desc" },
-      });
-      return res.json(allStudents.map(s => ({ ...s, assignedCourses: [] })));
+    // De-duplicate students and list the courses they are enrolled in within this admin's scope
+    const studentsById = new Map();
+    for (const enrollment of enrollments) {
+        const student = enrollment.student;
+        if (!studentsById.has(student.id)) {
+            studentsById.set(student.id, {
+                ...student,
+                assignedCourses: new Set(),
+            });
+        }
+        studentsById.get(student.id).assignedCourses.add(enrollment.courseId);
     }
 
-    // de-dup + assigned courses within this admin scope
-    const byId = new Map();             // studentId -> user
-    const assigned = new Map();         // studentId -> Set(courseId)
-    for (const e of enrollments) {
-      const s = e.student;
-      if (!byId.has(s.id)) byId.set(s.id, s);
-      if (!assigned.has(s.id)) assigned.set(s.id, new Set());
-      assigned.get(s.id).add(e.courseId);
-    }
-    const out = Array.from(byId.values()).map(s => ({
+    const result = Array.from(studentsById.values()).map(s => ({
       ...s,
-      assignedCourses: Array.from(assigned.get(s.id) || []),
+      assignedCourses: Array.from(s.assignedCourses),
     }));
-    res.json(out);
+
+    res.json(result);
   } catch (err) {
     next(err);
   }
 });
 
+
+// --- UPDATED: Instructors Route ---
+// Removed the `fallback` logic to ensure admins only ever see instructors
+// assigned to their own courses.
 router.get("/instructors", requireAdmin, async (req, res, next) => {
   try {
     const adminId = req.user.id;
-    const wantFallbackAll = String(req.query.fallback || "").toLowerCase() === "all";
+    const courseIds = await getAdminCourseIds(adminId);
 
-    // Courses this admin owns/manages
-    const myCourses = await prisma.course.findMany({
-      where: { OR: [{ creatorId: adminId }, { managerId: adminId }] },
-      select: { id: true },
-    });
-    const courseIds = myCourses.map(c => c.id);
-
+    // If the admin manages no courses, they have no instructors.
     if (courseIds.length === 0) {
-      if (!wantFallbackAll) return res.json([]); // no courses, scoped = empty
-
-      // fallback: all instructors
-      const allInstructors = await prisma.user.findMany({
-        where: { role: "INSTRUCTOR" },
-        select: { id: true, fullName: true, email: true, isActive: true, lastLogin: true },
-        orderBy: { id: "desc" },
-      });
-      return res.json(allInstructors.map(i => ({
-        ...i,
-        assignedCourses: [], // none within this admin's scope
-      })));
+        return res.json([]);
     }
 
-    // scoped: instructors linked to the admin's courses
+    // Get all instructor assignments for the admin's courses
     const links = await prisma.courseInstructor.findMany({
       where: { courseId: { in: courseIds } },
       select: {
@@ -217,52 +183,67 @@ router.get("/instructors", requireAdmin, async (req, res, next) => {
       },
     });
 
-    if (links.length === 0 && wantFallbackAll) {
-      const allInstructors = await prisma.user.findMany({
-        where: { role: "INSTRUCTOR" },
-        select: { id: true, fullName: true, email: true, isActive: true, lastLogin: true },
-        orderBy: { id: "desc" },
-      });
-      return res.json(allInstructors.map(i => ({ ...i, assignedCourses: [] })));
+    // De-duplicate instructors and list the courses they are assigned to within this admin's scope
+    const instructorsById = new Map();
+    for (const link of links) {
+        const instructor = link.instructor;
+        if (!instructorsById.has(instructor.id)) {
+            instructorsById.set(instructor.id, {
+                ...instructor,
+                assignedCourses: new Set(),
+            });
+        }
+        instructorsById.get(instructor.id).assignedCourses.add(link.courseId);
     }
 
-    // de-dup + assigned courses within this admin scope
-    const byId = new Map();              // instructorId -> user
-    const assigned = new Map();          // instructorId -> Set(courseId)
-    for (const l of links) {
-      const i = l.instructor;
-      if (!byId.has(i.id)) byId.set(i.id, i);
-      if (!assigned.has(i.id)) assigned.set(i.id, new Set());
-      assigned.get(i.id).add(l.courseId);
-    }
-    const out = Array.from(byId.values()).map(i => ({
-      ...i,
-      assignedCourses: Array.from(assigned.get(i.id) || []),
+    const result = Array.from(instructorsById.values()).map(i => ({
+        ...i,
+        assignedCourses: Array.from(i.assignedCourses),
     }));
-    res.json(out);
+
+    res.json(result);
   } catch (err) {
     next(err);
   }
 });
 
 
+// --- UPDATED: Permissions Route ---
+// Added a security check to ensure the admin manages the instructor
+// they are attempting to modify.
 router.patch(
   "/instructors/:id/permissions",
   requireAdmin,
   async (req, res, next) => {
     try {
-      const { id } = req.params;
+      const adminId = req.user.id;
+      const instructorId = req.params.id;
 
       const user = await prisma.user.findUnique({
-        where: { id },
+        where: { id: instructorId },
         select: { id: true, role: true },
       });
+
       if (!user || up(user.role) !== "INSTRUCTOR") {
         return res.status(404).json({ error: "Instructor not found" });
       }
 
+      // SECURITY CHECK: Verify this instructor is linked to one of the admin's courses
+      const adminCourseIds = await getAdminCourseIds(adminId);
+      const linkCount = await prisma.courseInstructor.count({
+          where: {
+              instructorId: instructorId,
+              courseId: { in: adminCourseIds },
+          },
+      });
+
+      if (linkCount === 0) {
+          return res.status(403).json({ error: "Forbidden: You do not manage this instructor." });
+      }
+      // END SECURITY CHECK
+
       const updated = await prisma.user.update({
-        where: { id },
+        where: { id: instructorId },
         data: { permissions: req.body || {} },
         select: { id: true, permissions: true },
       });
