@@ -1,32 +1,55 @@
 // middleware/auth.js
-import jwt from 'jsonwebtoken';
-import { prisma } from '../config/prisma.js';
+import jwt from "jsonwebtoken";
+import { prisma } from "../config/prisma.js";
+import email from "../utils/sendEmail.js";
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
-// Normalize to UPPER_SNAKE_CASE so comparisons are consistent
-const norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+/** Normalize to UPPER_SNAKE_CASE so comparisons are consistent */
+export const norm = (s) =>
+  String(s || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_");
 
-const getBearer = (req) => {
-  const auth = req.headers.authorization || '';
-  return auth.startsWith('Bearer ') ? auth.slice(7) : null;
+/** Try to extract a bearer token from header, cookie, or query param */
+const getToken = (req) => {
+  // 1) Authorization: Bearer <token>
+  const auth = req.headers.authorization || "";
+  if (auth.startsWith("Bearer ")) return auth.slice(7);
+
+  // 2) Cookie (common names)
+  if (req.cookies?.token) return req.cookies.token;
+  if (req.cookies?.access_token) return req.cookies.access_token;
+  if (req.cookies?.jwt) return req.cookies.jwt;
+
+  // 3) Query param (useful for webhooks/tools)
+  if (req.query?.token) return String(req.query.token);
+
+  return null;
 };
 
 export async function protect(req, res, next) {
   try {
-    const token = getBearer(req);
-    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    const token = getToken(req);
+    if (!token) return res.status(401).json({ error: "Unauthorized" });
 
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, JWT_SECRET);
     } catch {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const userId = decoded.id || decoded.userId || decoded.uid || decoded.sub || null;
+    // Be flexible with common JWT claim keys
+    const userId =
+      decoded.id || decoded.userId || decoded.uid || decoded.sub || null;
     const userEmail = decoded.email || decoded.user?.email || null;
-    if (!userId && !userEmail) return res.status(401).json({ error: 'Unauthorized' });
+    if (!userId && !userEmail)
+      return res.status(401).json({ error: "Unauthorized" });
 
-    const where = userId ? { id: String(userId) } : { email: String(userEmail) };
+    const where = userId
+      ? { id: String(userId) }
+      : { email: String(userEmail) };
 
     const user = await prisma.user.findUnique({
       where,
@@ -38,28 +61,64 @@ export async function protect(req, res, next) {
         isActive: true,
         isEmailVerified: true,
         permissions: true,
+        // expose new fields you added
+        year: true,
+        branch: true,
+        mobile: true,
+        mustChangePassword: true,
       },
     });
 
-    if (!user || !user.isActive) return res.status(401).json({ error: 'Unauthorized' });
+    if (!user || !user.isActive)
+      return res.status(401).json({ error: "Unauthorized" });
 
-    // Normalize role once
-    req.user = { ...user, role: norm(user.role) };
+    // Normalize role once; keep raw too if you need it
+    const rawRole = user.role || "";
+    const role = norm(rawRole);
+
+    // Standardize common admin variants, e.g. SUPERADMIN vs SUPER_ADMIN
+    const isAdmin =
+      role === "ADMIN" || role === "SUPER_ADMIN" || role === "SUPERADMIN";
+
+    // Attach to req for downstream handlers
+    req.user = {
+      ...user,
+      role, // normalized
+      rawRole, // original from DB
+      isAdmin,
+      permissions: user.permissions || {},
+    };
+
     next();
   } catch (err) {
-    console.error('protect error:', err);
-    return res.status(401).json({ error: 'Unauthorized' });
+    console.error("protect error:", err);
+    return res.status(401).json({ error: "Unauthorized" });
   }
 }
 
+/**
+ * Role-based guard
+ * Usage: router.get("/admin-only", protect, authorize("ADMIN","SUPER_ADMIN"), handler)
+ */
 export const authorize = (...roles) => {
-  // Normalize input roles once
+  // Normalize input roles once (support both ADMIN and SUPERADMIN variants)
   const allowed = roles.map((r) => norm(r));
+
   return (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({ success: false, message: 'Not authorized to access this route' });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "Not authorized to access this route",
+        });
     }
-    if (!allowed.includes(req.user.role)) {
+
+    // permit SUPERADMIN when SUPER_ADMIN was requested (and vice versa)
+    const userRole = req.user.role; // already normalized
+    const userRoleCompat = userRole === "SUPERADMIN" ? "SUPER_ADMIN" : userRole;
+
+    if (!allowed.includes(userRole) && !allowed.includes(userRoleCompat)) {
       return res.status(403).json({
         success: false,
         message: `User role '${req.user.role}' is not authorized to access this route`,
@@ -69,15 +128,39 @@ export const authorize = (...roles) => {
   };
 };
 
-// Option A: implement directly with normalized comparison
+/** Admin-only helper */
 export const requireAdminOnly = (req, res, next) => {
-  if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
-  const r = req.user.role; // already normalized by protect()
-  if (r === 'ADMIN' || r === 'SUPERADMIN') return next();
-  return res.status(403).json({ message: 'Admins only' });
+  if (!req.user) return res.status(401).json({ message: "Not authenticated" });
+  // role is already normalized by protect()
+  const r = req.user.role;
+  if (r === "ADMIN" || r === "SUPER_ADMIN" || r === "SUPERADMIN") return next();
+  return res.status(403).json({ message: "Admins only" });
 };
 
-// Option B (cleaner): just reuse authorize()
-// export const requireAdminOnly = authorize('ADMIN', 'SUPERADMIN');
+// controllers/auth.js
 
-export { norm };
+export const register = async (req, res) => {
+  try {
+    const { fullName, email, password, role } = req.body;
+    const user = await prisma.user.create({
+      data: { fullName, email, passwordHash: hash(password), role },
+    });
+
+    // trigger email after save
+    await sendEmail({
+      to: user.email,
+      subject: "Welcome to the Platform",
+      html: `
+        <h1>Hi ${user.fullName},</h1>
+        <p>Your account has been created successfully.</p>
+        <p>Email: ${user.email}</p>
+        <p>Password: (the one you set)</p>
+        <a href="${process.env.FRONTEND_URL}/login">Login here</a>
+      `,
+    });
+
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
